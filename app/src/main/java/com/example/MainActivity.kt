@@ -78,8 +78,9 @@ data class TransactionEntity(
     val category: String,
     val dateTime: Long, // Timestamp
     val note: String,
-    val personName: String = "সাধারণ",
-    val paidAmount: Double = 0.0
+    val personName: String = "General",
+    val paidAmount: Double = 0.0,
+    val repaymentsCsv: String = ""
 )
 
 @Entity(tableName = "notices")
@@ -134,7 +135,7 @@ interface FinanceDao {
 
 @Database(
     entities = [ProfileEntity::class, TransactionEntity::class, NoticeEntity::class, PersonEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class FinanceDatabase : RoomDatabase() {
@@ -214,6 +215,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
     var noticeContentInput by mutableStateOf("")
     var selectedNoticeColorHex by mutableStateOf("#FFF9C4") // Default yellow
     var showAddNoticeDialog by mutableStateOf(false)
+    var showAddPersonDialog by mutableStateOf(false)
     var editingNotice by mutableStateOf<NoticeEntity?>(null)
 
     // Dialog state for Double Tap note review
@@ -247,7 +249,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
             dao.deletePerson(person)
             lastDeletedPersonTransactions.forEach { dao.deleteTransaction(it) }
 
-            onShowSnackbar("${person.name} কে মুছে ফেলা হয়েছে!") {
+            onShowSnackbar("${person.name} has been deleted!") {
                 viewModelScope.launch {
                     val p = lastDeletedPerson
                     if (p != null) {
@@ -266,7 +268,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
             lastDeletedTransaction = tx
             dao.deleteTransaction(tx)
             
-            onShowSnackbar("লেনদেনটি মুছে ফেলা হয়েছে!") {
+            onShowSnackbar("Transaction has been deleted!") {
                 viewModelScope.launch {
                     val t = lastDeletedTransaction
                     if (t != null) {
@@ -283,7 +285,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
             lastDeletedNotice = notice
             dao.deleteNotice(notice)
             
-            onShowSnackbar("নোটটি মুছে ফেলা হয়েছে!") {
+            onShowSnackbar("Note has been deleted!") {
                 viewModelScope.launch {
                     val n = lastDeletedNotice
                     if (n != null) {
@@ -368,9 +370,9 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
         val amount = amountInput.toDoubleOrNull() ?: 0.0
         if (amount <= 0.0) return
 
-        val category = categoryInput.trim().ifEmpty { "অন্যান্য 🪙" }
+        val category = categoryInput.trim().ifEmpty { "Others 🪙" }
         val parsedTime = parseDateTime(dateTimeInput)
-        val person = selectedPersonName.trim().ifEmpty { "সাধারণ" }
+        val person = selectedPersonName.trim().ifEmpty { "General" }
 
         viewModelScope.launch {
             if (editingTransactionId != null) {
@@ -529,13 +531,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFF2ECC71), // Emerald Mint
-                    secondary = Color(0xFF3498DB), // Sky Blue
-                    background = Color(0xFF121214), // Coal black
-                    surface = Color(0xFF1E1E22), // Dark Card
-                    onBackground = Color.White,
-                    onSurface = Color.White
+                colorScheme = androidx.compose.material3.lightColorScheme(
+                    primary = Color(0xFF2E7D32), // Darker green for light theme readability
+                    secondary = Color(0xFF1976D2), // Darker blue for readability
+                    background = Color(0xFFFFFFFF), // White background
+                    surface = Color(0xFFF5F6FA), // Off-white/Light grey card
+                    onBackground = Color(0xFF1C1B1F), // Dark text on background
+                    onSurface = Color(0xFF1C1B1F) // Dark text on surface
                 )
             ) {
                 val viewModel: FinanceViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
@@ -578,9 +580,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
     var allTimeTotalIncome = 0.0
     var allTimeTotalExpense = 0.0
 
-    val generalTransactions = transactionsState.filter {
-        it.personName.trim().isEmpty() || it.personName.trim().lowercase() == "সাধারণ"
-    }
+    val generalTransactions = expandTransactions(transactionsState)
 
     generalTransactions.forEach { tx ->
         val calTx = Calendar.getInstance().apply { timeInMillis = tx.dateTime }
@@ -631,7 +631,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
             snackbarHostState.currentSnackbarData?.dismiss()
             val result = snackbarHostState.showSnackbar(
                 message = message,
-                actionLabel = "পূর্বাবস্থায় ফেরান ↩️",
+                actionLabel = "Undo ↩️",
                 duration = SnackbarDuration.Short
             )
             if (result == SnackbarResult.ActionPerformed) {
@@ -643,8 +643,8 @@ fun FinanceApp(viewModel: FinanceViewModel) {
     if (viewModel.showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.showDeleteConfirmDialog = false },
-            title = { Text(text = viewModel.deleteConfirmTitle, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
-            text = { Text(text = viewModel.deleteConfirmMessage, color = Color(0xFFC7C7CD), fontSize = 14.sp) },
+            title = { Text(text = viewModel.deleteConfirmTitle, color = Color(0xFF0F172A), fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = { Text(text = viewModel.deleteConfirmMessage, color = Color(0xFF475569), fontSize = 14.sp) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -654,7 +654,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE74C3C))
                 ) {
-                    Text("হ্যাঁ, ডিলিট করুন", color = Color.White)
+                    Text("Yes, Delete", color = Color(0xFF0F172A))
                 }
             },
             dismissButton = {
@@ -664,10 +664,10 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         viewModel.pendingDeleteAction = null
                     }
                 ) {
-                    Text("বাতিল", color = Color(0xFF9E9E9E))
+                    Text("Cancel", color = Color(0xFF64748B))
                 }
             },
-            containerColor = Color(0xFF1E1E22),
+            containerColor = Color.White,
             shape = RoundedCornerShape(16.dp)
         )
     }
@@ -690,7 +690,19 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
-                        contentDescription = "নতুন নোট যোগ করুন"
+                        contentDescription = "Add New Note"
+                    )
+                }
+            } else if (viewModel.currentTab == "ACCOUNT") {
+                FloatingActionButton(
+                    onClick = { viewModel.showAddPersonDialog = true },
+                    containerColor = Color(0xFF2E7D32),
+                    contentColor = Color.White,
+                    modifier = Modifier.testTag("add_person_fab")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Add New Person"
                     )
                 }
             }
@@ -713,11 +725,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color(0xFF0F0F11), Color(0xFF15151A))
-                    )
-                )
+                .background(Color.White)
                 .padding(innerPadding)
         ) {
             // Main Content Area with scroll state
@@ -743,7 +751,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         "ACCOUNT" -> {
                             val personsState by viewModel.persons.collectAsStateWithLifecycle()
                             val filteredPersons = remember(personsState) {
-                                personsState.filter { it.name != "সাধারণ" && it.name.trim().isNotEmpty() }
+                                personsState.filter { !it.name.trim().equals("সাধারণ", ignoreCase = true) && !it.name.trim().equals("general", ignoreCase = true) && it.name.trim().isNotEmpty() }
                             }
                             DuesLedgerSessionView(
                                 viewModel = viewModel,
@@ -792,41 +800,41 @@ fun FinanceApp(viewModel: FinanceViewModel) {
 fun AppHeader() {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-        border = BorderStroke(1.dp, Color(0xFF2E2E34))
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column {
                 Text(
-                    text = "ফিন্যান্স ম্যানেজার 💰",
-                    fontSize = 22.sp,
+                    text = "Finance Manager 💰",
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color(0xFF0F172A)
                 )
                 Text(
-                    text = "অল-ইন-ওয়ান পার্সোনাল ড্যাশবোর্ড",
-                    fontSize = 12.sp,
-                    color = Color(0xFF9E9E9E),
+                    text = "All-in-One Personal Dashboard",
+                    fontSize = 10.sp,
+                    color = Color(0xFF64748B),
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF2ECC71).copy(alpha = 0.15f)),
-                shape = RoundedCornerShape(8.dp)
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.12f)),
+                shape = RoundedCornerShape(6.dp)
             ) {
                 Text(
                     text = "PRO",
-                    color = Color(0xFF2ECC71),
-                    fontSize = 11.sp,
+                    color = Color(0xFF2E7D32),
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.Black,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                 )
             }
         }
@@ -836,6 +844,57 @@ fun AppHeader() {
 // ============================================================================
 // SESSION 1: DUES LEDGER SESSION VIEW (replaces Account Session View)
 // ============================================================================
+
+data class Repayment(val amount: Double, val timestamp: Long)
+
+fun parseRepayments(repaymentsCsv: String): List<Repayment> {
+    if (repaymentsCsv.trim().isEmpty()) return emptyList()
+    return repaymentsCsv.split(";").mapNotNull {
+        val parts = it.split("|")
+        if (parts.size == 2) {
+            val amt = parts[0].toDoubleOrNull()
+            val ts = parts[1].toLongOrNull()
+            if (amt != null && ts != null) {
+                Repayment(amt, ts)
+            } else null
+        } else null
+    }
+}
+
+fun formatRepayments(repayments: List<Repayment>): String {
+    return repayments.joinToString(";") { "${it.amount}|${it.timestamp}" }
+}
+
+fun expandTransactions(txList: List<TransactionEntity>): List<TransactionEntity> {
+    val result = ArrayList<TransactionEntity>()
+    for (tx in txList) {
+        result.add(tx)
+        val isPersonal = tx.personName.isNotEmpty() &&
+                !tx.personName.trim().equals("সাধারণ", ignoreCase = true) &&
+                !tx.personName.trim().equals("general", ignoreCase = true)
+        if (isPersonal && tx.repaymentsCsv.trim().isNotEmpty()) {
+            val repayments = parseRepayments(tx.repaymentsCsv)
+            for (rep in repayments) {
+                val syntheticType = if (tx.type == "EXPENSE") "INCOME" else "EXPENSE"
+                val syntheticCategory = "Repayment: ${tx.category}"
+                result.add(
+                    TransactionEntity(
+                        id = -tx.id - rep.timestamp.toInt().coerceAtLeast(1),
+                        amount = rep.amount,
+                        type = syntheticType,
+                        category = syntheticCategory,
+                        dateTime = rep.timestamp,
+                        note = "From/To ${tx.personName}",
+                        personName = tx.personName,
+                        paidAmount = 0.0,
+                        repaymentsCsv = ""
+                    )
+                )
+            }
+        }
+    }
+    return result
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -848,14 +907,13 @@ fun DuesLedgerSessionView(
     val context = LocalContext.current
     var expandedPersonId by remember { mutableStateOf<Int?>(null) }
 
-    var activeEditTxId by remember { mutableStateOf<Int?>(null) }
-    var editAmountInput by remember { mutableStateOf("") }
-    var editPaidAmountInput by remember { mutableStateOf("") }
-    var editCategoryInput by remember { mutableStateOf("") }
-
     var showEditPersonDialog by remember { mutableStateOf(false) }
     var personToEdit by remember { mutableStateOf<PersonEntity?>(null) }
     var editPersonNameInput by remember { mutableStateOf("") }
+
+    var showAddTxDialogForPerson by remember { mutableStateOf<PersonEntity?>(null) }
+    var showAddRepaymentDialogForTx by remember { mutableStateOf<TransactionEntity?>(null) }
+    var showEditTransactionAndRepaymentsDialog by remember { mutableStateOf<TransactionEntity?>(null) }
 
     data class PersonDuesModel(
         val person: PersonEntity,
@@ -889,29 +947,20 @@ fun DuesLedgerSessionView(
 
     val netStanding = totalReceivable - totalPayable
 
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
         // 1. BIG SUMMARY CARD FOR DUES
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E28)),
-            border = BorderStroke(1.dp, Color(0xFF2E2E38))
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0))
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(14.dp)
             ) {
-                Text(
-                    text = "👥 সবার মোট দেনা-পাওনা হিসাব",
-                    color = Color(0xFF9E9E9E),
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -925,149 +974,91 @@ fun DuesLedgerSessionView(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(8.dp)
+                                    .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF2ECC71))
+                                    .background(Color(0xFF2E7D32))
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = "মোট পাবো 📈", color = Color(0xFF9E9E9E), fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "Total Receivable 📈", color = Color(0xFF475569), fontSize = 9.sp)
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = "৳ " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", totalReceivable)),
-                            color = Color(0xFF2ECC71),
-                            fontSize = 26.sp,
+                            color = Color(0xFF2E7D32),
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Black
                         )
                     }
 
-                    // Divider
+                    // Divider 1
                     Box(
                         modifier = Modifier
                             .width(1.dp)
-                            .height(50.dp)
-                            .background(Color(0xFF2E2E38))
+                            .height(30.dp)
+                            .background(Color(0xFFE2E8F0))
                     )
 
                     // Total Payable Block
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(start = 16.dp),
-                        horizontalAlignment = Alignment.Start
+                            .padding(horizontal = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(8.dp)
+                                    .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFFE74C3C))
+                                    .background(Color(0xFFC62828))
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = "মোট ঋণ 📉", color = Color(0xFF9E9E9E), fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "Total Payable 📉", color = Color(0xFF475569), fontSize = 9.sp)
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = "৳ " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", totalPayable)),
-                            color = Color(0xFFE74C3C),
-                            fontSize = 26.sp,
+                            color = Color(0xFFC62828),
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Black
                         )
                     }
-                }
 
-                Divider(color = Color(0xFF2E2E38), thickness = 1.dp, modifier = Modifier.padding(vertical = 16.dp))
-
-                // Net Standing Message
-                val netStandingAbs = if (netStanding > 0) netStanding else -netStanding
-                val standingBgColor = if (netStanding > 0) Color(0xFF2ECC71).copy(alpha = 0.12f) else if (netStanding < 0) Color(0xFFE74C3C).copy(alpha = 0.12f) else Color(0xFF3498DB).copy(alpha = 0.12f)
-                val standingBorderColor = if (netStanding > 0) Color(0xFF2ECC71).copy(alpha = 0.4f) else if (netStanding < 0) Color(0xFFE74C3C).copy(alpha = 0.4f) else Color(0xFF3498DB).copy(alpha = 0.4f)
-                val standingTextColor = if (netStanding > 0) Color(0xFF2ECC71) else if (netStanding < 0) Color(0xFFE74C3C) else Color(0xFF3498DB)
-
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = standingBgColor),
-                    border = BorderStroke(1.dp, standingBorderColor),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
+                    // Divider 2
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        val statusEmoji = if (netStanding > 0) "🎉" else if (netStanding < 0) "⚠️" else "🤝"
-                        val statusText = if (netStanding > 0) {
-                            "নিট হিসাব : " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", netStanding)) + " পাবো"
-                        } else if (netStanding < 0) {
-                            "নিট হিসাব : " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", netStandingAbs)) + " ঋন"
-                        } else {
-                            "নিট হিসাব : ০ পাবো"
-                        }
-                        Text(
-                            text = statusEmoji + " " + statusText,
-                            color = standingTextColor,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-            }
-        }
-
-        // 2. ADD NEW PERSON CARD
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-            border = BorderStroke(1.dp, Color(0xFF2E2E34))
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "👥 নতুন ব্যক্তি বা নাম যোগ করুন",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = viewModel.newPersonNameInput,
-                        onValueChange = { viewModel.newPersonNameInput = it },
-                        placeholder = { Text("নাম লিখুন...", fontSize = 13.sp) },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF2ECC71),
-                            unfocusedBorderColor = Color(0xFF3E3E44)
-                        )
+                            .width(1.dp)
+                            .height(30.dp)
+                            .background(Color(0xFFE2E8F0))
                     )
 
-                    Button(
-                        onClick = {
-                            if (viewModel.newPersonNameInput.trim().isNotEmpty()) {
-                                viewModel.addPerson()
-                                Toast.makeText(context, "নতুন নাম যোগ করা হয়েছে!", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "অনুগ্রহ করে সঠিক নাম লিখুন!", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ECC71)),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.height(54.dp)
+                    // Net Status Block
+                    val netStandingAbs = if (netStanding >= 0.0) netStanding else -netStanding
+                    val netColor = if (netStanding > 0.0) Color(0xFF2E7D32) else if (netStanding < 0.0) Color(0xFFC62828) else Color(0xFF1976D2)
+                    val netPrefix = if (netStanding >= 0.0) "৳ " else "-৳ "
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1.2f),
+                        horizontalAlignment = Alignment.End
                     ) {
-                        Text(text = "যোগ করুন 💾", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(netColor)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "Net Status 🪙", color = Color(0xFF475569), fontSize = 9.sp)
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = netPrefix + convertToBengaliNumber(String.format(Locale.US, "%,.0f", netStandingAbs)),
+                            color = netColor,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black
+                        )
                     }
                 }
             }
@@ -1075,47 +1066,47 @@ fun DuesLedgerSessionView(
 
         // 3. INDIVIDUAL DUES LIST
         Text(
-            text = "📋 ব্যক্তিদের দেনা-পাওনা তালিকা (" + convertToBengaliNumber(persons.size.toString()) + " জন)",
-            fontSize = 15.sp,
+            text = "📋 People Dues List (" + convertToBengaliNumber(persons.size.toString()) + ")",
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
-            modifier = Modifier.padding(top = 8.dp)
+            color = Color(0xFF0F172A),
+            modifier = Modifier.padding(top = 4.dp)
         )
 
         if (persons.isEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22).copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, Color(0xFF2E2E34))
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(32.dp),
+                        .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("👥", fontSize = 42.sp)
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("👥", fontSize = 32.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "কোনো নাম খুঁজে পাওয়া যায়নি!",
-                        color = Color(0xFF9E9E9E),
-                        fontSize = 14.sp,
+                        text = "No people found!",
+                        color = Color(0xFF475569),
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = "উপরে নতুন নাম লিখে যোগ করুন যাতে আলাদাভাবে দেনা-পাওনা হিসাব করতে পারেন।",
-                        color = Color(0xFF6E6E74),
-                        fontSize = 11.sp,
+                        text = "Click the floating action button (+) at the bottom right corner to add a new person to start tracking individual debts and dues.",
+                        color = Color(0xFF64748B),
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.padding(top = 2.dp)
                     )
                 }
             }
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 personDuesList.forEach { model ->
                     val person = model.person
                     val totalGiven = model.totalGiven
@@ -1125,11 +1116,11 @@ fun DuesLedgerSessionView(
 
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
                         border = BorderStroke(
                             width = 1.dp,
-                            color = if (netBalance > 0) Color(0xFF2ECC71).copy(alpha = 0.3f) else if (netBalance < 0) Color(0xFFE74C3C).copy(alpha = 0.3f) else Color(0xFF2E2E34)
+                            color = if (netBalance > 0) Color(0xFF2E7D32).copy(alpha = 0.25f) else if (netBalance < 0) Color(0xFFC62828).copy(alpha = 0.25f) else Color(0xFFE2E8F0)
                         )
                     ) {
                         Column {
@@ -1142,27 +1133,27 @@ fun DuesLedgerSessionView(
                                         },
                                         onLongClick = {
                                             viewModel.confirmDelete(
-                                                title = "ব্যক্তি ডিলিট নিশ্চিতকরণ",
-                                                message = "${person.name} এবং তার সকল লেনদেন ডিলিট করতে চান?",
+                                                title = "Delete Person Confirmation",
+                                                message = "Do you want to delete ${person.name} and all of their transactions?",
                                                 action = {
                                                     viewModel.deletePersonWithUndo(person, showSnackbarWithUndo)
                                                 }
                                             )
                                         }
                                     )
-                                    .padding(12.dp),
+                                    .padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                     // Avatar circle with first letter
                                     val avatarChar = if (person.name.trim().isNotEmpty()) person.name.trim()[0].toString() else "?"
-                                    val avatarBgColor = if (netBalance > 0) Color(0xFF2ECC71).copy(alpha = 0.15f) else if (netBalance < 0) Color(0xFFE74C3C).copy(alpha = 0.15f) else Color(0xFF2A2A30)
-                                    val avatarTextColor = if (netBalance > 0) Color(0xFF2ECC71) else if (netBalance < 0) Color(0xFFE74C3C) else Color.White
+                                    val avatarBgColor = if (netBalance > 0) Color(0xFF2E7D32).copy(alpha = 0.12f) else if (netBalance < 0) Color(0xFFC62828).copy(alpha = 0.12f) else Color(0xFFF1F5F9)
+                                    val avatarTextColor = if (netBalance > 0) Color(0xFF2E7D32) else if (netBalance < 0) Color(0xFFC62828) else Color(0xFF0F172A)
                                     Box(
                                         contentAlignment = Alignment.Center,
                                         modifier = Modifier
-                                            .size(38.dp)
+                                            .size(32.dp)
                                             .clip(CircleShape)
                                             .background(avatarBgColor)
                                     ) {
@@ -1170,38 +1161,38 @@ fun DuesLedgerSessionView(
                                             text = avatarChar,
                                             color = avatarTextColor,
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 16.sp
+                                            fontSize = 13.sp
                                         )
                                     }
 
-                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
 
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = person.name,
-                                            color = Color.White,
-                                            fontSize = 15.sp,
+                                            color = Color(0xFF0F172A),
+                                            fontSize = 13.sp,
                                             fontWeight = FontWeight.Bold
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
                                         val netText = if (netBalance > 0) {
-                                            "নিট হিসাব: " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", netBalance)) + " পাবো"
+                                            "Net: You will receive ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", netBalance))
                                         } else if (netBalance < 0) {
-                                            "নিট হিসাব: " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", -netBalance)) + " ঋন"
+                                            "Net: You owe ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", -netBalance))
                                         } else {
-                                            "নিট হিসাব: ০"
+                                            "Net: Balanced"
                                         }
-                                        val netColor = if (netBalance > 0) Color(0xFF2ECC71) else if (netBalance < 0) Color(0xFFE74C3C) else Color(0xFF9E9E9E)
+                                        val netColor = if (netBalance > 0) Color(0xFF2E7D32) else if (netBalance < 0) Color(0xFFC62828) else Color(0xFF64748B)
                                         Text(
                                             text = netText,
                                             color = netColor,
-                                            fontSize = 11.sp
+                                            fontSize = 10.sp
                                         )
                                     }
                                 }
 
                                 // Edit button
-                                if (person.name != "সাধারণ") {
+                                if (!person.name.trim().equals("সাধারণ", ignoreCase = true) && !person.name.trim().equals("general", ignoreCase = true)) {
                                     IconButton(
                                         onClick = {
                                             personToEdit = person
@@ -1209,482 +1200,202 @@ fun DuesLedgerSessionView(
                                             showEditPersonDialog = true
                                         },
                                         modifier = Modifier
-                                            .size(32.dp)
-                                            .background(Color(0xFF3498DB).copy(alpha = 0.1f), CircleShape)
+                                            .size(28.dp)
+                                            .background(Color(0xFF1976D2).copy(alpha = 0.08f), CircleShape)
                                     ) {
-                                        Text("✏️", fontSize = 11.sp)
+                                        Text("✏️", fontSize = 10.sp)
                                     }
                                 }
                             }
 
-                            // EXPANDED SECTION WITH INDIVIDUAL TRANSACTION DETAILS & IN-PLACE FORM
+                            // EXPANDED SECTION WITH INDIVIDUAL TRANSACTION DETAILS
                             if (expandedPersonId == person.id) {
-                                Divider(color = Color(0xFF2E2E34), thickness = 1.dp)
+                                Divider(color = Color(0xFFE2E8F0), thickness = 1.dp)
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(Color(0xFF16161A))
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        .background(Color(0xFFF8FAFC))
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    // Detailed summary card inside expanded profile
-                                    Card(
+                                    // "Pressing a person's name shows a button to add a new transaction"
+                                    Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = BorderStroke(1.dp, Color(0xFF2E2E34))
+                                        horizontalArrangement = Arrangement.Center
                                     ) {
-                                        Column(
-                                            modifier = Modifier.padding(10.dp),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        Button(
+                                            onClick = { showAddTxDialogForPerson = person },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                            modifier = Modifier.height(34.dp)
                                         ) {
-                                            Text(
-                                                text = "📊 বিস্তারিত দেনা-পাওনা হিসাব:",
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color.White
-                                            )
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(
-                                                    text = "মোট দিয়েছি (পাবো): ৳ " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", totalGiven)),
-                                                    color = Color(0xFF2ECC71),
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    text = "মোট নিয়েছি (ঋণ): ৳ " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", totalTaken)),
-                                                    color = Color(0xFFE74C3C),
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Divider(color = Color(0xFF2E2E34), thickness = 0.5.dp)
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(
-                                                    text = "নিট সমন্বয়:",
-                                                    color = Color(0xFF9E9E9E),
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                if (netBalance > 0) {
-                                                    Text(
-                                                        text = "৳ " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", netBalance)) + " পাবো",
-                                                        color = Color(0xFF2ECC71),
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 12.sp
-                                                    )
-                                                } else if (netBalance < 0) {
-                                                    Text(
-                                                        text = "৳ " + convertToBengaliNumber(String.format(Locale.US, "%,.0f", -netBalance)) + " ঋণ",
-                                                        color = Color(0xFFE74C3C),
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 12.sp
-                                                    )
-                                                } else {
-                                                    Text(
-                                                        text = "৳ ০ (সমতা)",
-                                                        color = Color(0xFF9E9E9E),
-                                                        fontWeight = FontWeight.Normal,
-                                                        fontSize = 12.sp
-                                                    )
-                                                }
-                                            }
+                                            Text("➕ Add New Transaction", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
                                         }
                                     }
 
-                                    // 1. Mini-form to add a new transaction for this person
-                                    Text(
-                                        text = "➕ নতুন লেনদেন রেকর্ড করুন:",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
- 
-                                    var quickAmountInput by remember(person.id) { mutableStateOf("") }
-                                    var quickCategoryInput by remember(person.id) { mutableStateOf("") }
- 
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        OutlinedTextField(
-                                            value = quickAmountInput,
-                                            onValueChange = { quickAmountInput = it },
-                                            placeholder = { Text("পরিমাণ ৳", fontSize = 11.sp) },
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f),
-                                            colors = OutlinedTextFieldDefaults.colors(
-                                                focusedTextColor = Color.White,
-                                                unfocusedTextColor = Color.White,
-                                                focusedBorderColor = Color(0xFF3498DB),
-                                                unfocusedBorderColor = Color(0xFF3E3E44)
-                                            ),
-                                            textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
-                                        )
- 
-                                        OutlinedTextField(
-                                            value = quickCategoryInput,
-                                            onValueChange = { quickCategoryInput = it },
-                                            placeholder = { Text("বিবরণ (যেমন: ধার, পরিশোধ)", fontSize = 11.sp) },
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1.5f),
-                                            colors = OutlinedTextFieldDefaults.colors(
-                                                focusedTextColor = Color.White,
-                                                unfocusedTextColor = Color.White,
-                                                focusedBorderColor = Color(0xFF3498DB),
-                                                unfocusedBorderColor = Color(0xFF3E3E44)
-                                            ),
-                                            textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
-                                        )
-                                    }
- 
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        // Give loan / Pay money to them (EXPENSE)
-                                        Button(
-                                            onClick = {
-                                                val amt = quickAmountInput.toDoubleOrNull() ?: 0.0
-                                                if (amt > 0.0) {
-                                                    val desc = quickCategoryInput.trim().ifEmpty { "টাকা দিলাম" }
-                                                    viewModel.viewModelScope.launch {
-                                                        viewModel.dao.insertTransaction(
-                                                            TransactionEntity(
-                                                                amount = amt,
-                                                                type = "EXPENSE",
-                                                                category = desc,
-                                                                dateTime = System.currentTimeMillis(),
-                                                                note = "",
-                                                                personName = person.name
-                                                            )
-                                                        )
-                                                    }
-                                                    quickAmountInput = ""
-                                                    quickCategoryInput = ""
-                                                    Toast.makeText(context, "দেনা-পাওনা সংরক্ষিত হয়েছে!", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    Toast.makeText(context, "সঠিক পরিমাণ লিখুন!", Toast.LENGTH_SHORT).show()
-                                                }
-                                            },
-                                            modifier = Modifier.weight(1f),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE74C3C)),
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = PaddingValues(vertical = 8.dp)
-                                        ) {
-                                            Text("টাকা দিলাম 📉", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        }
- 
-                                        // Receive loan / Get money from them (INCOME)
-                                        Button(
-                                            onClick = {
-                                                val amt = quickAmountInput.toDoubleOrNull() ?: 0.0
-                                                if (amt > 0.0) {
-                                                    val desc = quickCategoryInput.trim().ifEmpty { "টাকা পেলাম" }
-                                                    viewModel.viewModelScope.launch {
-                                                        viewModel.dao.insertTransaction(
-                                                            TransactionEntity(
-                                                                amount = amt,
-                                                                type = "INCOME",
-                                                                category = desc,
-                                                                dateTime = System.currentTimeMillis(),
-                                                                note = "",
-                                                                personName = person.name
-                                                            )
-                                                        )
-                                                    }
-                                                    quickAmountInput = ""
-                                                    quickCategoryInput = ""
-                                                    Toast.makeText(context, "দেনা-পাওনা সংরক্ষিত হয়েছে!", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    Toast.makeText(context, "সঠিক পরিমাণ লিখুন!", Toast.LENGTH_SHORT).show()
-                                                }
-                                            },
-                                            modifier = Modifier.weight(1f),
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ECC71)),
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = PaddingValues(vertical = 8.dp)
-                                        ) {
-                                            Text("টাকা পেলাম 📈", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                        }
-                                    }
- 
-                                    // 2. Transaction history list for this person
+                                    // Transaction history list for this person
                                     val personTx = transactions.filter { it.personName.trim().lowercase() == person.name.trim().lowercase() }
                                         .sortedByDescending { it.dateTime }
- 
+
                                     Text(
-                                        text = "📜 লেনদেন ইতিহাস (" + convertToBengaliNumber(personTx.size.toString()) + " টি):",
-                                        fontSize = 12.sp,
+                                        text = "📜 Transaction History (" + convertToBengaliNumber(personTx.size.toString()) + "):",
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF9E9E9E)
+                                        color = Color(0xFF475569)
                                     )
- 
+
                                     if (personTx.isEmpty()) {
                                         Text(
-                                            text = "কোনো পূর্ববর্তী লেনদেন নেই।",
-                                            fontSize = 11.sp,
-                                            color = Color(0xFF6E6E74)
+                                            text = "No previous transactions.",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF64748B),
+                                            modifier = Modifier.padding(bottom = 4.dp)
                                         )
                                     } else {
                                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                             personTx.forEach { tx ->
-                                                val dateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale("bn")).format(Date(tx.dateTime))
+                                                val dateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale.US).format(Date(tx.dateTime))
                                                 val isInc = tx.type == "INCOME"
                                                 val prefix = if (isInc) "+" else "-"
-                                                val color = if (isInc) Color(0xFF2ECC71) else Color(0xFFE74C3C)
-                                                val remaining = maxOf(0.0, tx.amount - tx.paidAmount)
-                                                val isFullyPaid = tx.paidAmount >= tx.amount
- 
-                                                Column(
+                                                val color = if (isInc) Color(0xFF2E7D32) else Color(0xFFC62828)
+                                                
+                                                val repayments = parseRepayments(tx.repaymentsCsv)
+                                                val totalRepaymentsAmount = repayments.sumOf { it.amount }
+                                                val remaining = maxOf(0.0, tx.amount - totalRepaymentsAmount)
+                                                val isFullyPaid = totalRepaymentsAmount >= tx.amount
+
+                                                // Card layout representing one transaction block
+                                                Card(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .background(Color(0xFF1E1E22), RoundedCornerShape(8.dp))
-                                                        .border(
-                                                            width = 1.dp,
-                                                            color = if (activeEditTxId == tx.id) Color(0xFF3498DB) else Color.Transparent,
-                                                            shape = RoundedCornerShape(8.dp)
-                                                        )
-                                                        .clickable {
-                                                            if (activeEditTxId == tx.id) {
-                                                                activeEditTxId = null
-                                                            } else {
-                                                                activeEditTxId = tx.id
-                                                                editAmountInput = tx.amount.toString()
-                                                                editPaidAmountInput = tx.paidAmount.toString()
-                                                                editCategoryInput = tx.category
+                                                        .combinedClickable(
+                                                            onClick = {
+                                                                // Single click does nothing or triggers details, let's keep it safe
+                                                            },
+                                                            onDoubleClick = {
+                                                                // "লিস্টে ডাবল টেপ একটা পপাপ উইন্ডো তে বিবরন তারিখ ও টাকা ও প্রতেক্টা পরিশোধ তারিখ ও টাকা এডিট করা যাবে"
+                                                                showEditTransactionAndRepaymentsDialog = tx
+                                                            },
+                                                            onLongClick = {
+                                                                // "লং প্রেস ডিলেট, আর ডিলেট বাটন বাদ"
+                                                                viewModel.confirmDelete(
+                                                                    title = "Delete Transaction Confirmation",
+                                                                    message = "Are you sure you want to delete this transaction?",
+                                                                    action = {
+                                                                        viewModel.deleteTransactionWithUndo(tx, showSnackbarWithUndo)
+                                                                    }
+                                                                )
                                                             }
-                                                        }
-                                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                                        ),
+                                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    border = BorderStroke(0.5.dp, Color(0xFFE2E8F0))
                                                 ) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.SpaceBetween
-                                                    ) {
-                                                        Column(modifier = Modifier.weight(1f)) {
+                                                    Column(modifier = Modifier.padding(8.dp)) {
+                                                        // Line 1: বিবরন তারিখ-সময় টাকা
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
                                                             Row(
                                                                 verticalAlignment = Alignment.CenterVertically,
-                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                                modifier = Modifier.weight(1f)
                                                             ) {
                                                                 Text(
                                                                     text = tx.category,
-                                                                    color = Color.White,
-                                                                    fontSize = 12.sp,
-                                                                    fontWeight = FontWeight.Bold
-                                                                )
-                                                                if (isFullyPaid) {
-                                                                    Card(
-                                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2ECC71).copy(alpha = 0.15f)),
-                                                                        shape = RoundedCornerShape(4.dp)
-                                                                    ) {
-                                                                        Text(
-                                                                            text = "সম্পূর্ণ পরিশোধ ✅",
-                                                                            color = Color(0xFF2ECC71),
-                                                                            fontSize = 9.sp,
-                                                                            fontWeight = FontWeight.Bold,
-                                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                                        )
-                                                                    }
-                                                                } else if (tx.paidAmount > 0.0) {
-                                                                    Card(
-                                                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF39C12).copy(alpha = 0.15f)),
-                                                                        shape = RoundedCornerShape(4.dp)
-                                                                    ) {
-                                                                        Text(
-                                                                            text = "পরিশোধিত: ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", tx.paidAmount)),
-                                                                            color = Color(0xFFF39C12),
-                                                                            fontSize = 9.sp,
-                                                                            fontWeight = FontWeight.Bold,
-                                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                                        )
-                                                                    }
-                                                                }
-                                                            }
-                                                            Text(text = dateStr, color = Color(0xFF9E9E9E), fontSize = 10.sp)
-                                                        }
- 
-                                                        Row(
-                                                            verticalAlignment = Alignment.CenterVertically,
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                        ) {
-                                                            Column(horizontalAlignment = Alignment.End) {
-                                                                Text(
-                                                                    text = "$prefix ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", tx.amount)),
-                                                                    color = color,
-                                                                    fontSize = 12.sp,
-                                                                    fontWeight = FontWeight.Bold
-                                                                )
-                                                                if (!isFullyPaid && tx.paidAmount > 0.0) {
-                                                                    Text(
-                                                                        text = "বাকি: ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", remaining)),
-                                                                        color = Color(0xFFE74C3C),
-                                                                        fontSize = 10.sp,
-                                                                        fontWeight = FontWeight.Bold
-                                                                    )
-                                                                }
-                                                            }
- 
-                                                            // Delete button
-                                                            IconButton(
-                                                                onClick = {
-                                                                    viewModel.confirmDelete(
-                                                                        title = "লেনদেন ডিলিট নিশ্চিতকরণ",
-                                                                        message = "আপনি কি এই লেনদেনটি ডিলিট করতে চান?",
-                                                                        action = {
-                                                                            viewModel.deleteTransactionWithUndo(tx, showSnackbarWithUndo)
-                                                                        }
-                                                                    )
-                                                                },
-                                                                modifier = Modifier.size(24.dp)
-                                                            ) {
-                                                                Text("🗑️", fontSize = 10.sp)
-                                                            }
-                                                        }
-                                                    }
- 
-                                                    // INLINE EDITOR / PAY DETAILS
-                                                    if (activeEditTxId == tx.id) {
-                                                        Spacer(modifier = Modifier.height(8.dp))
-                                                        Card(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF25252B)),
-                                                            border = BorderStroke(1.dp, Color(0xFF3498DB).copy(alpha = 0.5f)),
-                                                            shape = RoundedCornerShape(8.dp)
-                                                        ) {
-                                                            Column(
-                                                                modifier = Modifier.padding(10.dp),
-                                                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = "✏️ লেনদেন সংশোধন ও পরিশোধ আপডেট করুন:",
+                                                                    color = Color(0xFF0F172A),
                                                                     fontSize = 11.sp,
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    color = Color(0xFF3498DB)
+                                                                    fontWeight = FontWeight.Bold
                                                                 )
- 
+                                                                Text(
+                                                                    text = convertToBengaliNumber(dateStr),
+                                                                    color = Color(0xFF64748B),
+                                                                    fontSize = 8.sp
+                                                                )
+                                                            }
+                                                            Text(
+                                                                text = "$prefix ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", tx.amount)),
+                                                                color = color,
+                                                                fontSize = 11.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            )
+                                                        }
+
+                                                        // Line 2+: repayments listed on their own line
+                                                        repayments.forEachIndexed { repIdx, rep ->
+                                                            val repDateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale.US).format(Date(rep.timestamp))
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(top = 4.dp, start = 8.dp),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
                                                                 Row(
-                                                                    modifier = Modifier.fillMaxWidth(),
-                                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                                    verticalAlignment = Alignment.CenterVertically,
+                                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                                 ) {
-                                                                    // 1. Amount input
-                                                                    OutlinedTextField(
-                                                                        value = editAmountInput,
-                                                                        onValueChange = { editAmountInput = it },
-                                                                        label = { Text("মূল পরিমাণ ৳", fontSize = 10.sp) },
-                                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                                        singleLine = true,
-                                                                        modifier = Modifier.weight(1f),
-                                                                        colors = OutlinedTextFieldDefaults.colors(
-                                                                            focusedTextColor = Color.White,
-                                                                            unfocusedTextColor = Color.White,
-                                                                            focusedBorderColor = Color(0xFF3498DB),
-                                                                            unfocusedBorderColor = Color(0xFF3E3E44)
-                                                                        ),
-                                                                        textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
+                                                                    Text(
+                                                                        text = "Repaid",
+                                                                        color = Color(0xFF1976D2),
+                                                                        fontSize = 10.sp,
+                                                                        fontWeight = FontWeight.Medium
                                                                     )
- 
-                                                                    // 2. Paid amount input
-                                                                    OutlinedTextField(
-                                                                        value = editPaidAmountInput,
-                                                                        onValueChange = { editPaidAmountInput = it },
-                                                                        label = { Text("পরিশোধিত পরিমাণ ৳", fontSize = 10.sp) },
-                                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                                        singleLine = true,
-                                                                        modifier = Modifier.weight(1f),
-                                                                        colors = OutlinedTextFieldDefaults.colors(
-                                                                            focusedTextColor = Color.White,
-                                                                            unfocusedTextColor = Color.White,
-                                                                            focusedBorderColor = Color(0xFF2ECC71),
-                                                                            unfocusedBorderColor = Color(0xFF3E3E44)
-                                                                        ),
-                                                                        textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
+                                                                    Text(
+                                                                        text = convertToBengaliNumber(repDateStr),
+                                                                        color = Color(0xFF64748B),
+                                                                        fontSize = 8.sp
                                                                     )
                                                                 }
- 
-                                                                // Category/Description input
-                                                                OutlinedTextField(
-                                                                    value = editCategoryInput,
-                                                                    onValueChange = { editCategoryInput = it },
-                                                                    label = { Text("বিবরণ / ক্যাটাগরি", fontSize = 10.sp) },
-                                                                    singleLine = true,
-                                                                    modifier = Modifier.fillMaxWidth(),
-                                                                    colors = OutlinedTextFieldDefaults.colors(
-                                                                        focusedTextColor = Color.White,
-                                                                        unfocusedTextColor = Color.White,
-                                                                        focusedBorderColor = Color(0xFF3498DB),
-                                                                        unfocusedBorderColor = Color(0xFF3E3E44)
-                                                                    ),
-                                                                    textStyle = LocalTextStyle.current.copy(fontSize = 12.sp)
+                                                                Text(
+                                                                    text = "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", rep.amount)),
+                                                                    color = Color(0xFF475569),
+                                                                    fontSize = 10.sp,
+                                                                    fontWeight = FontWeight.Medium
                                                                 )
- 
-                                                                Row(
-                                                                    modifier = Modifier.fillMaxWidth(),
-                                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                                ) {
-                                                                    // Quick Full Pay button
-                                                                    Button(
-                                                                        onClick = {
-                                                                            val originalAmt = editAmountInput.toDoubleOrNull() ?: tx.amount
-                                                                            editPaidAmountInput = originalAmt.toString()
-                                                                        },
-                                                                        modifier = Modifier.weight(1.2f),
-                                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ECC71)),
-                                                                        shape = RoundedCornerShape(6.dp),
-                                                                        contentPadding = PaddingValues(vertical = 6.dp)
-                                                                    ) {
-                                                                        Text("সম্পূর্ণ পরিশোধ ✅", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 10.sp)
-                                                                    }
- 
-                                                                    // Save button
-                                                                    Button(
-                                                                        onClick = {
-                                                                            val originalAmt = editAmountInput.toDoubleOrNull() ?: 0.0
-                                                                            val paidAmt = editPaidAmountInput.toDoubleOrNull() ?: 0.0
-                                                                            val cat = editCategoryInput.trim()
-                                                                            if (originalAmt > 0.0 && cat.isNotEmpty()) {
-                                                                                viewModel.viewModelScope.launch {
-                                                                                    viewModel.dao.updateTransaction(
-                                                                                        tx.copy(
-                                                                                            amount = originalAmt,
-                                                                                            paidAmount = paidAmt,
-                                                                                            category = cat
-                                                                                        )
-                                                                                    )
-                                                                                }
-                                                                                activeEditTxId = null
-                                                                                Toast.makeText(context, "লেনদেন আপডেট করা হয়েছে!", Toast.LENGTH_SHORT).show()
-                                                                            } else {
-                                                                                Toast.makeText(context, "সঠিক পরিমাণ ও বিবরণ লিখুন!", Toast.LENGTH_SHORT).show()
-                                                                            }
-                                                                        },
-                                                                        modifier = Modifier.weight(1f),
-                                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3498DB)),
-                                                                        shape = RoundedCornerShape(6.dp),
-                                                                        contentPadding = PaddingValues(vertical = 6.dp)
-                                                                    ) {
-                                                                        Text("সংরক্ষণ 💾", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp)
-                                                                    }
- 
-                                                                    // Cancel button
-                                                                    Button(
-                                                                        onClick = { activeEditTxId = null },
-                                                                        modifier = Modifier.weight(0.8f),
-                                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3E3E44)),
-                                                                        shape = RoundedCornerShape(6.dp),
-                                                                        contentPadding = PaddingValues(vertical = 6.dp)
-                                                                    ) {
-                                                                        Text("বাতিল ❌", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp)
-                                                                    }
-                                                                }
+                                                            }
+                                                        }
+
+                                                        Divider(color = Color(0xFFF1F5F9), thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
+
+                                                        // Bottom Line: পরিশোধ যোগ(বাটন) বাকী: <amount> টাকা
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Button(
+                                                                onClick = { showAddRepaymentDialogForTx = tx },
+                                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                                                                shape = RoundedCornerShape(6.dp),
+                                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                                modifier = Modifier.height(24.dp)
+                                                            ) {
+                                                                Text("Add Pay ➕", fontSize = 9.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                                            }
+
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = "Remaining:",
+                                                                    color = Color(0xFF64748B),
+                                                                    fontSize = 10.sp,
+                                                                    fontWeight = FontWeight.Medium
+                                                                )
+                                                                val remainingColor = if (isFullyPaid) Color(0xFF2E7D32) else Color(0xFFC62828)
+                                                                val remainingWeight = if (isFullyPaid) FontWeight.Normal else FontWeight.Bold
+                                                                val remainingText = if (isFullyPaid) "Fully Paid ✅" else "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", remaining))
+                                                                Text(
+                                                                    text = remainingText,
+                                                                    color = remainingColor,
+                                                                    fontSize = 10.sp,
+                                                                    fontWeight = remainingWeight
+                                                                )
                                                             }
                                                         }
                                                     }
@@ -1701,29 +1412,546 @@ fun DuesLedgerSessionView(
         }
     }
 
+    // ------------------------------------------------------------------------
+    // POPUP DIALOGS
+    // ------------------------------------------------------------------------
+
+    // Add Person Dialog (triggered from FAB in Parent Scaffold)
+    if (viewModel.showAddPersonDialog) {
+        Dialog(onDismissRequest = { viewModel.showAddPersonDialog = false }) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "👥 Add New Person",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+                    OutlinedTextField(
+                        value = viewModel.newPersonNameInput,
+                        onValueChange = { viewModel.newPersonNameInput = it },
+                        placeholder = { Text("Enter name...", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF2E7D32),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { viewModel.showAddPersonDialog = false }) {
+                            Text("Cancel", fontSize = 11.sp, color = Color(0xFF64748B))
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Button(
+                            onClick = {
+                                if (viewModel.newPersonNameInput.trim().isNotEmpty()) {
+                                    viewModel.addPerson()
+                                    viewModel.showAddPersonDialog = false
+                                    Toast.makeText(context, "New person added successfully!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Please enter a valid name!", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Save 💾", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add Transaction for specific person Dialog
+    if (showAddTxDialogForPerson != null) {
+        val person = showAddTxDialogForPerson!!
+        var quickAmountInput by remember { mutableStateOf("") }
+        var quickCategoryInput by remember { mutableStateOf("") }
+
+        Dialog(onDismissRequest = { showAddTxDialogForPerson = null }) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "➕ New Transaction (${person.name})",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+                    OutlinedTextField(
+                        value = quickAmountInput,
+                        onValueChange = { quickAmountInput = it },
+                        placeholder = { Text("Amount ৳", fontSize = 11.sp) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+                    OutlinedTextField(
+                        value = quickCategoryInput,
+                        onValueChange = { quickCategoryInput = it },
+                        placeholder = { Text("Description (e.g. loan, payment)", fontSize = 11.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val amt = quickAmountInput.toDoubleOrNull() ?: 0.0
+                                if (amt > 0.0) {
+                                    val desc = quickCategoryInput.trim().ifEmpty { "Gave Money" }
+                                    viewModel.viewModelScope.launch {
+                                        viewModel.dao.insertTransaction(
+                                            TransactionEntity(
+                                                amount = amt,
+                                                type = "EXPENSE",
+                                                category = desc,
+                                                dateTime = System.currentTimeMillis(),
+                                                note = "",
+                                                personName = person.name
+                                            )
+                                        )
+                                    }
+                                    showAddTxDialogForPerson = null
+                                    Toast.makeText(context, "Transaction saved successfully!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Please enter a valid amount!", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("I Gave 📉", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                        }
+
+                        Button(
+                            onClick = {
+                                val amt = quickAmountInput.toDoubleOrNull() ?: 0.0
+                                if (amt > 0.0) {
+                                    val desc = quickCategoryInput.trim().ifEmpty { "Received Money" }
+                                    viewModel.viewModelScope.launch {
+                                        viewModel.dao.insertTransaction(
+                                            TransactionEntity(
+                                                amount = amt,
+                                                type = "INCOME",
+                                                category = desc,
+                                                dateTime = System.currentTimeMillis(),
+                                                note = "",
+                                                personName = person.name
+                                            )
+                                        )
+                                    }
+                                    showAddTxDialogForPerson = null
+                                    Toast.makeText(context, "Transaction saved successfully!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Please enter a valid amount!", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("I Got 📈", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add Repayment Dialog
+    if (showAddRepaymentDialogForTx != null) {
+        val tx = showAddRepaymentDialogForTx!!
+        var repaymentAmountInput by remember { mutableStateOf("") }
+
+        Dialog(onDismissRequest = { showAddRepaymentDialogForTx = null }) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "💸 Add New Repayment",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+                    OutlinedTextField(
+                        value = repaymentAmountInput,
+                        onValueChange = { repaymentAmountInput = it },
+                        placeholder = { Text("Amount ৳", fontSize = 11.sp) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF2E7D32),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { showAddRepaymentDialogForTx = null }) {
+                            Text("Cancel", fontSize = 11.sp, color = Color(0xFF64748B))
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Button(
+                            onClick = {
+                                val amt = repaymentAmountInput.toDoubleOrNull() ?: 0.0
+                                if (amt > 0.0) {
+                                    val repayments = parseRepayments(tx.repaymentsCsv).toMutableList()
+                                    repayments.add(Repayment(amt, System.currentTimeMillis()))
+                                    val updatedCsv = formatRepayments(repayments)
+                                    val totalPaid = repayments.sumOf { it.amount }
+
+                                    viewModel.viewModelScope.launch {
+                                        viewModel.dao.updateTransaction(
+                                            tx.copy(
+                                                repaymentsCsv = updatedCsv,
+                                                paidAmount = totalPaid
+                                            )
+                                        )
+                                    }
+                                    showAddRepaymentDialogForTx = null
+                                    Toast.makeText(context, "Repayment added successfully!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Please enter a valid amount!", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Save", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Edit Transaction and Repayments Dialog
+    if (showEditTransactionAndRepaymentsDialog != null) {
+        val tx = showEditTransactionAndRepaymentsDialog!!
+        var categoryInput by remember { mutableStateOf(tx.category) }
+        var amountInput by remember { mutableStateOf(tx.amount.toString()) }
+        var dateTimeInput by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(tx.dateTime))) }
+        var typeInput by remember { mutableStateOf(tx.type) }
+
+        val initialRepayments = remember(tx.repaymentsCsv) { parseRepayments(tx.repaymentsCsv) }
+        var repaymentsState by remember { mutableStateOf(initialRepayments) }
+
+        Dialog(onDismissRequest = { showEditTransactionAndRepaymentsDialog = null }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .heightIn(max = 500.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "✏️ Edit Transaction & Repayments",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
+                            onClick = { typeInput = "EXPENSE" },
+                            modifier = Modifier.weight(1f).height(32.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (typeInput == "EXPENSE") Color(0xFFC62828) else Color(0xFFF1F5F9),
+                                contentColor = if (typeInput == "EXPENSE") Color.White else Color(0xFF0F172A)
+                            ),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("I Gave 📉", fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                        }
+
+                        Button(
+                            onClick = { typeInput = "INCOME" },
+                            modifier = Modifier.weight(1f).height(32.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (typeInput == "INCOME") Color(0xFF2E7D32) else Color(0xFFF1F5F9),
+                                contentColor = if (typeInput == "INCOME") Color.White else Color(0xFF0F172A)
+                            ),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("I Got 📈", fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = categoryInput,
+                        onValueChange = { categoryInput = it },
+                        label = { Text("Description", fontSize = 9.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+
+                    OutlinedTextField(
+                        value = amountInput,
+                        onValueChange = { amountInput = it },
+                        label = { Text("Main Amount ৳", fontSize = 9.sp) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+
+                    OutlinedTextField(
+                        value = dateTimeInput,
+                        onValueChange = { dateTimeInput = it },
+                        label = { Text("Date (YYYY-MM-DD HH:MM)", fontSize = 9.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                    )
+
+                    if (repaymentsState.isNotEmpty()) {
+                        Text(
+                            text = "💸 Repayments List:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF475569)
+                        )
+
+                        repaymentsState.forEachIndexed { index, repayment ->
+                            var repAmt by remember(repayment) { mutableStateOf(repayment.amount.toString()) }
+                            var repDate by remember(repayment) { mutableStateOf(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(repayment.timestamp))) }
+
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                                border = BorderStroke(0.5.dp, Color(0xFFE2E8F0))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = repAmt,
+                                        onValueChange = {
+                                            repAmt = it
+                                            val dVal = it.toDoubleOrNull() ?: 0.0
+                                            repaymentsState = repaymentsState.toMutableList().apply {
+                                                this[index] = Repayment(dVal, repaymentsState[index].timestamp)
+                                            }
+                                        },
+                                        label = { Text("৳", fontSize = 8.sp) },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = Color(0xFF0F172A),
+                                            unfocusedTextColor = Color(0xFF0F172A),
+                                            focusedBorderColor = Color(0xFF1976D2),
+                                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                                        ),
+                                        textStyle = LocalTextStyle.current.copy(fontSize = 10.sp)
+                                    )
+
+                                    OutlinedTextField(
+                                        value = repDate,
+                                        onValueChange = {
+                                            repDate = it
+                                            val parser = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                                            val ts = try { parser.parse(it)?.time ?: repayment.timestamp } catch (e: Exception) { repayment.timestamp }
+                                            repaymentsState = repaymentsState.toMutableList().apply {
+                                                this[index] = Repayment(repaymentsState[index].amount, ts)
+                                            }
+                                        },
+                                        label = { Text("Date", fontSize = 8.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1.8f),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = Color(0xFF0F172A),
+                                            unfocusedTextColor = Color(0xFF0F172A),
+                                            focusedBorderColor = Color(0xFF1976D2),
+                                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                                        ),
+                                        textStyle = LocalTextStyle.current.copy(fontSize = 10.sp)
+                                    )
+
+                                    IconButton(
+                                        onClick = {
+                                            repaymentsState = repaymentsState.toMutableList().apply {
+                                                removeAt(index)
+                                            }
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Text("🗑️", fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { showEditTransactionAndRepaymentsDialog = null }) {
+                            Text("Cancel", fontSize = 11.sp, color = Color(0xFF64748B))
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Button(
+                            onClick = {
+                                val finalAmt = amountInput.toDoubleOrNull() ?: tx.amount
+                                val finalCategory = categoryInput.trim().ifEmpty { tx.category }
+                                val finalTime = try {
+                                    SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).parse(dateTimeInput)?.time ?: tx.dateTime
+                                } catch (e: Exception) {
+                                    tx.dateTime
+                                }
+
+                                val filteredRepayments = repaymentsState.filter { it.amount > 0.0 }
+                                val updatedCsv = formatRepayments(filteredRepayments)
+                                val finalPaid = filteredRepayments.sumOf { it.amount }
+
+                                viewModel.viewModelScope.launch {
+                                    viewModel.dao.updateTransaction(
+                                        tx.copy(
+                                            amount = finalAmt,
+                                            type = typeInput,
+                                            category = finalCategory,
+                                            dateTime = finalTime,
+                                            repaymentsCsv = updatedCsv,
+                                            paidAmount = finalPaid
+                                        )
+                                    )
+                                }
+                                showEditTransactionAndRepaymentsDialog = null
+                                Toast.makeText(context, "Transaction updated successfully!", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Save", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Person Name Editor Dialog
     if (showEditPersonDialog && personToEdit != null) {
         AlertDialog(
             onDismissRequest = {
                 showEditPersonDialog = false
                 personToEdit = null
             },
-            title = { Text("নাম পরিবর্তন করুন", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            title = { Text("Edit Name", color = Color(0xFF0F172A), fontWeight = FontWeight.Bold, fontSize = 14.sp) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("ব্যক্তির নতুন নাম লিখুন:", color = Color(0xFFC7C7CD), fontSize = 13.sp)
-                    OutlinedTextField(
-                        value = editPersonNameInput,
-                        onValueChange = { editPersonNameInput = it },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF3498DB),
-                            unfocusedBorderColor = Color(0xFF3E3E44)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                OutlinedTextField(
+                    value = editPersonNameInput,
+                    onValueChange = { editPersonNameInput = it },
+                    placeholder = { Text("Enter new name") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color(0xFF0F172A),
+                        unfocusedTextColor = Color(0xFF0F172A),
+                        focusedBorderColor = Color(0xFF1976D2),
+                        unfocusedBorderColor = Color(0xFFCBD5E1)
+                    ),
+                    textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                )
             },
             confirmButton = {
                 Button(
@@ -1735,9 +1963,10 @@ fun DuesLedgerSessionView(
                             personToEdit = null
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3498DB))
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                    shape = RoundedCornerShape(6.dp)
                 ) {
-                    Text("পরিবর্তন করুন", color = Color.White)
+                    Text("Save", color = Color.White, fontSize = 11.sp)
                 }
             },
             dismissButton = {
@@ -1747,22 +1976,17 @@ fun DuesLedgerSessionView(
                         personToEdit = null
                     }
                 ) {
-                    Text("বাতিল", color = Color(0xFF9E9E9E))
+                    Text("Cancel", color = Color(0xFF64748B), fontSize = 11.sp)
                 }
             },
-            containerColor = Color(0xFF1E1E22),
-            shape = RoundedCornerShape(16.dp)
+            containerColor = Color.White,
+            shape = RoundedCornerShape(12.dp)
         )
     }
 }
 
 fun convertToBengaliNumber(numberStr: String): String {
-    val englishDigits = listOf('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')
-    val bengaliDigits = listOf('০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯')
-    return numberStr.map { char ->
-        val idx = englishDigits.indexOf(char)
-        if (idx != -1) bengaliDigits[idx] else char
-    }.joinToString("")
+    return numberStr
 }
 
 // ============================================================================
@@ -1799,9 +2023,7 @@ fun TrackerSessionView(
         }
     }
 
-    val generalTransactions = transactions.filter {
-        it.personName.trim().isEmpty() || it.personName.trim().lowercase() == "সাধারণ"
-    }
+    val generalTransactions = expandTransactions(transactions)
 
     // 1. Calculate Carry-over Balance from previous months if month is filtered
     val isMonthFiltered = viewModel.filterYear != "ALL" && viewModel.filterMonth != "ALL"
@@ -1838,7 +2060,7 @@ fun TrackerSessionView(
     var runningBalance = profile.openingBalance + (if (profile.isSalaryIncluded) profile.monthlySalary else 0.0)
     
     val keyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-    val labelFormat = SimpleDateFormat("d MMMM yy", Locale("bn"))
+    val labelFormat = SimpleDateFormat("d MMMM yy", Locale.US)
     
     allTransactionsSorted.forEach { tx ->
         val key = keyFormat.format(Date(tx.dateTime))
@@ -1878,8 +2100,8 @@ fun TrackerSessionView(
     }.sortedByDescending { it.timestamp }
 
     // Category Lists
-    val defaultIncomeCategories = listOf("বেতন 💼", "ব্যবসা 📈", "ফ্রিল্যান্সিং 💻", "বিনিয়োগ 🏦", "উপহার 🎁", "অন্যান্য 🪙")
-    val defaultExpenseCategories = listOf("খাবার 🍔", "ভাড়া 🏠", "বিল ⚡", "যাতায়াত 🚗", "কেনাকাটা 🛍️", "ওষুধ 💊", "বিনোদন 🎬", "শিক্ষা 📚", "অন্যান্য 💸")
+    val defaultIncomeCategories = listOf("Salary 💼", "Business 📈", "Freelancing 💻", "Investment 🏦", "Gift 🎁", "Others 🪙")
+    val defaultExpenseCategories = listOf("Food 🍔", "Rent 🏠", "Bills ⚡", "Transport 🚗", "Shopping 🛍️", "Medicine 💊", "Entertainment 🎬", "Education 📚", "Others 💸")
 
     val activeCategories = if (viewModel.activeFormType == "INCOME") defaultIncomeCategories else defaultExpenseCategories
 
@@ -1898,92 +2120,80 @@ fun TrackerSessionView(
     val filteredExpenseSum = filteredTxList.filter { it.type == "EXPENSE" }.sumOf { it.amount }
     val filteredBalance = filteredIncomeSum - filteredExpenseSum
 
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
         // 0. Dynamic visual summary card for the active filtered set - AT THE VERY TOP
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-            border = BorderStroke(1.dp, Color(0xFF2E2E34))
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0))
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                if (isMonthFiltered) {
                     Text(
-                        text = "📊 নির্বাচিত তালিকার হিসাব",
-                        fontSize = 14.sp,
+                        text = "Pre. Month: ৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.0f", carryOverFromPrevMonths))}",
+                        fontSize = 11.sp,
+                        color = Color(0xFF2E7D32),
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
-                    if (isMonthFiltered) {
-                        Text(
-                            text = "আগের মাসের ক্যারি: ৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.2f", carryOverFromPrevMonths))}",
-                            fontSize = 10.sp,
-                            color = Color(0xFF2ECC71),
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
                 }
-                Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(horizontalAlignment = Alignment.Start, modifier = Modifier.weight(1f)) {
-                        Text("মোট আয় 📈", fontSize = 10.sp, color = Color(0xFF9E9E9E))
+                        Text("Total Income 📈", fontSize = 9.sp, color = Color(0xFF64748B))
                         Text(
-                            text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.2f", filteredIncomeSum))}",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF2ECC71),
-                            modifier = Modifier.padding(top = 2.dp)
+                            text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.0f", filteredIncomeSum))}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Color(0xFF2E7D32),
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                     }
                     Box(
                         modifier = Modifier
                             .width(1.dp)
-                            .height(32.dp)
-                            .background(Color(0xFF2E2E38))
+                            .height(30.dp)
+                            .background(Color(0xFFE2E8F0))
                     )
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                        Text("মোট ব্যয় 📉", fontSize = 10.sp, color = Color(0xFF9E9E9E))
+                        Text("Total Expense 📉", fontSize = 9.sp, color = Color(0xFF64748B))
                         Text(
-                            text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.2f", filteredExpenseSum))}",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFE74C3C),
-                            modifier = Modifier.padding(top = 2.dp)
+                            text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.0f", filteredExpenseSum))}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Color(0xFFC62828),
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                     }
                     Box(
                         modifier = Modifier
                             .width(1.dp)
-                            .height(32.dp)
-                            .background(Color(0xFF2E2E38))
+                            .height(30.dp)
+                            .background(Color(0xFFE2E8F0))
                     )
                     Column(horizontalAlignment = Alignment.End, modifier = Modifier.weight(1.2f)) {
-                        Text("ব্যালেন্স 🪙", fontSize = 10.sp, color = Color(0xFF9E9E9E))
+                        Text("Balance 🪙", fontSize = 9.sp, color = Color(0xFF64748B))
                         Text(
-                            text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.2f", filteredBalance))}",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (filteredBalance >= 0.0) Color(0xFF2ECC71) else Color(0xFFE74C3C),
-                            modifier = Modifier.padding(top = 2.dp)
+                            text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.0f", filteredBalance))}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            color = if (filteredBalance >= 0.0) Color(0xFF2E7D32) else Color(0xFFC62828),
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                     }
                 }
             }
         }
 
-        // 1. Double Form Entry Card (Replaced with 2 popup entry buttons per user request)
+        // 1. Quick Entry Buttons (Green/Red visual elements)
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Button(
                 onClick = {
@@ -1995,21 +2205,21 @@ fun TrackerSessionView(
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ECC71)),
-                shape = RoundedCornerShape(12.dp),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                    .height(44.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                shape = RoundedCornerShape(10.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
-                    Text("📈", fontSize = 16.sp)
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("+", fontSize = 16.sp, fontWeight = FontWeight.Black)
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "আয় এন্ট্রি",
-                        color = Color.Black,
-                        fontSize = 14.sp,
+                        text = "Add Income",
+                        color = Color.White,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -2025,21 +2235,21 @@ fun TrackerSessionView(
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE74C3C)),
-                shape = RoundedCornerShape(12.dp),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                    .height(44.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                shape = RoundedCornerShape(10.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
-                    Text("📉", fontSize = 16.sp)
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("+", fontSize = 16.sp, fontWeight = FontWeight.Black)
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "ব্যয় এন্ট্রি",
+                        text = "Add Expense",
                         color = Color.White,
-                        fontSize = 14.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -2054,22 +2264,22 @@ fun TrackerSessionView(
                 },
                 title = {
                     val titleText = if (viewModel.editingTransactionId != null) {
-                        "লেনদেন সংশোধন করুন ✏️"
+                        "Edit Transaction ✏️"
                     } else if (dialogType == "INCOME") {
-                        "আয় যোগ করুন 📈"
+                        "Add Income 📈"
                     } else {
-                        "ব্যয় যোগ করুন 📉"
+                        "Add Expense 📉"
                     }
                     Text(
                         text = titleText,
-                        color = Color.White,
+                        color = Color(0xFF0F172A),
                         fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
+                        fontSize = 14.sp
                     )
                 },
                 text = {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         val calendar = Calendar.getInstance()
@@ -2115,15 +2325,15 @@ fun TrackerSessionView(
                         OutlinedTextField(
                             value = viewModel.categoryInput,
                             onValueChange = { viewModel.categoryInput = it },
-                            label = { Text("ক্যাটাগরি", color = Color(0xFFC7C7CD), fontSize = 13.sp) },
-                            placeholder = { Text("যেমন: বেতন, খাবার, ভাড়া") },
+                            placeholder = { Text("Category (e.g. salary, food)", fontSize = 11.sp) },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2ECC71) else Color(0xFFE74C3C),
-                                unfocusedBorderColor = Color(0xFF3E3E44)
+                                focusedTextColor = Color(0xFF0F172A),
+                                unfocusedTextColor = Color(0xFF0F172A),
+                                focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
+                                unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 11.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -2131,16 +2341,16 @@ fun TrackerSessionView(
                         OutlinedTextField(
                             value = viewModel.amountInput,
                             onValueChange = { viewModel.amountInput = it },
-                            label = { Text("পরিমাণ (৳)", color = Color(0xFFC7C7CD), fontSize = 13.sp) },
-                            placeholder = { Text("টাকার পরিমাণ") },
+                            placeholder = { Text("Amount (৳)", fontSize = 11.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2ECC71) else Color(0xFFE74C3C),
-                                unfocusedBorderColor = Color(0xFF3E3E44)
+                                focusedTextColor = Color(0xFF0F172A),
+                                unfocusedTextColor = Color(0xFF0F172A),
+                                focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
+                                unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 11.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -2155,40 +2365,37 @@ fun TrackerSessionView(
                                 onValueChange = { },
                                 readOnly = true,
                                 enabled = false,
-                                label = { Text("তারিখ ও সময়", color = Color(0xFFC7C7CD), fontSize = 13.sp) },
+                                placeholder = { Text("Date & Time", fontSize = 11.sp) },
                                 trailingIcon = {
                                     IconButton(onClick = { datePickerDialog.show() }) {
-                                        Text("🕒", fontSize = 16.sp)
+                                        Text("🕒", fontSize = 13.sp)
                                     }
                                 },
                                 colors = OutlinedTextFieldDefaults.colors(
-                                    disabledTextColor = Color.White,
-                                    disabledBorderColor = if (dialogType == "INCOME") Color(0xFF2ECC71) else Color(0xFFE74C3C),
-                                    disabledLabelColor = Color(0xFF9E9E9E),
-                                    disabledTrailingIconColor = Color(0xFF9E9E9E)
+                                    disabledTextColor = Color(0xFF0F172A),
+                                    disabledBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
+                                    disabledPlaceholderColor = Color(0xFF64748B)
                                 ),
+                                textStyle = LocalTextStyle.current.copy(fontSize = 11.sp),
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
 
-                        // 4. Description (Note) - 3 lines height, enter key break
+                        // 4. Description (Details)
                         OutlinedTextField(
                             value = viewModel.noteInput,
                             onValueChange = { viewModel.noteInput = it },
-                            label = { Text("বিবরণ", color = Color(0xFFC7C7CD), fontSize = 13.sp) },
-                            placeholder = { Text("লেনদেনের বিস্তারিত বিবরণ লিখুন...") },
+                            placeholder = { Text("Enter details (optional)...", fontSize = 11.sp) },
                             singleLine = false,
-                            minLines = 3,
-                            maxLines = 3,
-                            keyboardOptions = KeyboardOptions(
-                                imeAction = ImeAction.Default
-                            ),
+                            minLines = 2,
+                            maxLines = 2,
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2ECC71) else Color(0xFFE74C3C),
-                                unfocusedBorderColor = Color(0xFF3E3E44)
+                                focusedTextColor = Color(0xFF0F172A),
+                                unfocusedTextColor = Color(0xFF0F172A),
+                                focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
+                                unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 11.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -2198,19 +2405,20 @@ fun TrackerSessionView(
                         onClick = {
                             val amount = viewModel.amountInput.toDoubleOrNull()
                             if (amount == null || amount <= 0.0) {
-                                Toast.makeText(context, "অনুগ্রহ করে সঠিক টাকার পরিমাণ লিখুন!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Please enter a valid amount!", Toast.LENGTH_SHORT).show()
                             } else {
                                 viewModel.saveTransaction()
                                 showAddEditDialog = false
-                                Toast.makeText(context, "রেকর্ড সফলভাবে সংরক্ষিত হয়েছে!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Record saved successfully!", Toast.LENGTH_SHORT).show()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (dialogType == "INCOME") Color(0xFF2ECC71) else Color(0xFFE74C3C)
-                        )
+                            containerColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828)
+                        ),
+                        shape = RoundedCornerShape(6.dp)
                     ) {
-                        val btnText = if (viewModel.editingTransactionId != null) "আপডেট করুন" else "সংরক্ষণ করুন"
-                        Text(text = btnText, color = if (dialogType == "INCOME") Color.Black else Color.White, fontWeight = FontWeight.Bold)
+                        val btnText = if (viewModel.editingTransactionId != null) "Update" else "Save"
+                        Text(text = btnText, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                     }
                 },
                 dismissButton = {
@@ -2220,30 +2428,30 @@ fun TrackerSessionView(
                             viewModel.cancelEditing()
                         }
                     ) {
-                        Text("বাতিল", color = Color(0xFF9E9E9E))
+                        Text("Cancel", color = Color(0xFF64748B), fontSize = 11.sp)
                     }
                 },
-                containerColor = Color(0xFF1E1E22),
-                shape = RoundedCornerShape(16.dp)
+                containerColor = Color.White,
+                shape = RoundedCornerShape(12.dp)
             )
         }
 
         // 2. Filter System Card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-            border = BorderStroke(1.dp, Color(0xFF2E2E34))
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0))
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier.padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "🔍 রেকর্ড ফিল্টার ও অনুসন্ধান",
-                    fontSize = 15.sp,
+                    text = "🔍 Filter & Search Records",
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color(0xFF0F172A)
                 )
 
                 var isSearchVisible by remember { mutableStateOf(false) }
@@ -2252,11 +2460,11 @@ fun TrackerSessionView(
                 var dayMenuExpanded by remember { mutableStateOf(false) }
 
                 val monthNames = listOf(
-                    "জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন",
-                    "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"
+                    "January", "February", "March", "April", "May", "June",
+                    "July", "August", "September", "October", "November", "December"
                 )
 
-                val selectedYearText = convertToBengaliNumber(viewModel.filterYear) + " সাল"
+                val selectedYearText = viewModel.filterYear
 
                 val availableMonths = if (viewModel.filterYear == "ALL") {
                     emptyList()
@@ -2265,9 +2473,9 @@ fun TrackerSessionView(
                 }
 
                 val selectedMonthText = if (viewModel.filterMonth == "ALL") {
-                    "সকল মাস"
+                    "All Months"
                 } else {
-                    monthNames.getOrNull(viewModel.filterMonth.toIntOrNull() ?: -1) ?: "সকল মাস"
+                    monthNames.getOrNull(viewModel.filterMonth.toIntOrNull() ?: -1) ?: "All Months"
                 }
 
                 val availableDays = if (viewModel.filterYear == "ALL" || viewModel.filterMonth == "ALL") {
@@ -2285,9 +2493,9 @@ fun TrackerSessionView(
                 }
 
                 val selectedDayText = if (viewModel.filterDay == "ALL") {
-                    "সকল দিন"
+                    "All Days"
                 } else {
-                    "${convertToBengaliNumber(viewModel.filterDay)} তারিখ"
+                    "Day ${viewModel.filterDay}"
                 }
 
                 // Row of cascading filters: Year, Month, Day, Search button
@@ -2300,25 +2508,25 @@ fun TrackerSessionView(
                     Box(modifier = Modifier.weight(1.1f)) {
                         Button(
                             onClick = { yearMenuExpanded = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A32)),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+                            modifier = Modifier.fillMaxWidth().height(34.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF1F5F9)),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
                             ) {
                                 Text(
-                                    text = if (viewModel.filterYear == "ALL") "সকল বছর 🗓️" else "$selectedYearText 🗓️",
-                                    color = Color.White,
-                                    fontSize = 10.sp,
+                                    text = if (viewModel.filterYear == "ALL") "All Years 🗓️" else "$selectedYearText",
+                                    color = Color(0xFF0F172A),
+                                    fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("▼", color = Color(0xFF9E9E9E), fontSize = 7.sp)
+                                Text("▼", color = Color(0xFF64748B), fontSize = 6.sp)
                             }
                         }
 
@@ -2326,11 +2534,11 @@ fun TrackerSessionView(
                             expanded = yearMenuExpanded,
                             onDismissRequest = { yearMenuExpanded = false },
                             modifier = Modifier
-                                .background(Color(0xFF1E1E22))
-                                .heightIn(max = 280.dp)
+                                .background(Color.White)
+                                .heightIn(max = 240.dp)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("সকল বছর", color = Color.White, fontSize = 12.sp) },
+                                text = { Text("All Years", color = Color(0xFF0F172A), fontSize = 11.sp) },
                                 onClick = {
                                     viewModel.filterYear = "ALL"
                                     viewModel.filterMonth = "ALL"
@@ -2340,7 +2548,7 @@ fun TrackerSessionView(
                             )
                             (2026..2099).forEach { y ->
                                 DropdownMenuItem(
-                                    text = { Text(convertToBengaliNumber(y.toString()), color = Color.White, fontSize = 12.sp) },
+                                    text = { Text(y.toString(), color = Color(0xFF0F172A), fontSize = 11.sp) },
                                     onClick = {
                                         viewModel.filterYear = y.toString()
                                         viewModel.filterMonth = "ALL"
@@ -2357,32 +2565,32 @@ fun TrackerSessionView(
                         Button(
                             onClick = {
                                 if (viewModel.filterYear == "ALL") {
-                                    Toast.makeText(context, "প্রথমে বছর সিলেক্ট করুন!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Please select year first!", Toast.LENGTH_SHORT).show()
                                 } else {
                                     monthMenuExpanded = true
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().height(34.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (viewModel.filterYear == "ALL") Color(0xFF1A1A22) else Color(0xFF2A2A32)
+                                containerColor = if (viewModel.filterYear == "ALL") Color(0xFFF1F5F9).copy(alpha = 0.5f) else Color(0xFFF1F5F9)
                             ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
                             ) {
                                 Text(
-                                    text = if (viewModel.filterMonth == "ALL") "সকল মাস 📅" else "$selectedMonthText 📅",
-                                    color = if (viewModel.filterYear == "ALL") Color(0xFF6E6E74) else Color.White,
-                                    fontSize = 10.sp,
+                                    text = if (viewModel.filterMonth == "ALL") "All Months 📅" else "$selectedMonthText",
+                                    color = if (viewModel.filterYear == "ALL") Color(0xFF94A3B8) else Color(0xFF0F172A),
+                                    fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("▼", color = Color(0xFF9E9E9E), fontSize = 7.sp)
+                                Text("▼", color = Color(0xFF64748B), fontSize = 6.sp)
                             }
                         }
 
@@ -2390,11 +2598,11 @@ fun TrackerSessionView(
                             expanded = monthMenuExpanded,
                             onDismissRequest = { monthMenuExpanded = false },
                             modifier = Modifier
-                                .background(Color(0xFF1E1E22))
-                                .heightIn(max = 280.dp)
+                                .background(Color.White)
+                                .heightIn(max = 240.dp)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("সকল মাস", color = Color.White, fontSize = 12.sp) },
+                                text = { Text("All Months", color = Color(0xFF0F172A), fontSize = 11.sp) },
                                 onClick = {
                                     viewModel.filterMonth = "ALL"
                                     viewModel.filterDay = "ALL"
@@ -2403,7 +2611,7 @@ fun TrackerSessionView(
                             )
                             availableMonths.forEach { mIdx ->
                                 DropdownMenuItem(
-                                    text = { Text(monthNames[mIdx], color = Color.White, fontSize = 12.sp) },
+                                    text = { Text(monthNames[mIdx], color = Color(0xFF0F172A), fontSize = 11.sp) },
                                     onClick = {
                                         viewModel.filterMonth = mIdx.toString()
                                         viewModel.filterDay = "ALL"
@@ -2419,32 +2627,32 @@ fun TrackerSessionView(
                         Button(
                             onClick = {
                                 if (viewModel.filterYear == "ALL" || viewModel.filterMonth == "ALL") {
-                                    Toast.makeText(context, "প্রথমে বছর ও মাস সিলেক্ট করুন!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Please select year and month first!", Toast.LENGTH_SHORT).show()
                                 } else {
                                     dayMenuExpanded = true
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().height(34.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (viewModel.filterYear == "ALL" || viewModel.filterMonth == "ALL") Color(0xFF1A1A22) else Color(0xFF2A2A32)
+                                containerColor = if (viewModel.filterYear == "ALL" || viewModel.filterMonth == "ALL") Color(0xFFF1F5F9).copy(alpha = 0.5f) else Color(0xFFF1F5F9)
                             ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
                             ) {
                                 Text(
-                                    text = if (viewModel.filterDay == "ALL") "সকল দিন ⏱️" else "$selectedDayText",
-                                    color = if (viewModel.filterYear == "ALL" || viewModel.filterMonth == "ALL") Color(0xFF6E6E74) else Color.White,
-                                    fontSize = 10.sp,
+                                    text = if (viewModel.filterDay == "ALL") "All Days ⏱️" else "$selectedDayText",
+                                    color = if (viewModel.filterYear == "ALL" || viewModel.filterMonth == "ALL") Color(0xFF94A3B8) else Color(0xFF0F172A),
+                                    fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("▼", color = Color(0xFF9E9E9E), fontSize = 7.sp)
+                                Text("▼", color = Color(0xFF64748B), fontSize = 6.sp)
                             }
                         }
 
@@ -2452,11 +2660,11 @@ fun TrackerSessionView(
                             expanded = dayMenuExpanded,
                             onDismissRequest = { dayMenuExpanded = false },
                             modifier = Modifier
-                                .background(Color(0xFF1E1E22))
-                                .heightIn(max = 280.dp)
+                                .background(Color.White)
+                                .heightIn(max = 240.dp)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("সকল দিন", color = Color.White, fontSize = 12.sp) },
+                                text = { Text("All Days", color = Color(0xFF0F172A), fontSize = 11.sp) },
                                 onClick = {
                                     viewModel.filterDay = "ALL"
                                     dayMenuExpanded = false
@@ -2464,7 +2672,7 @@ fun TrackerSessionView(
                             )
                             availableDays.forEach { d ->
                                 DropdownMenuItem(
-                                    text = { Text("${convertToBengaliNumber(d.toString())} তারিখ", color = Color.White, fontSize = 12.sp) },
+                                    text = { Text("Day $d", color = Color(0xFF0F172A), fontSize = 11.sp) },
                                     onClick = {
                                         viewModel.filterDay = d.toString()
                                         dayMenuExpanded = false
@@ -2478,22 +2686,22 @@ fun TrackerSessionView(
                     Button(
                         onClick = { isSearchVisible = !isSearchVisible },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isSearchVisible) Color(0xFF3498DB) else Color(0xFF2A2A32)
+                            containerColor = if (isSearchVisible) Color(0xFF1976D2) else Color(0xFFF1F5F9)
                         ),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                        modifier = Modifier.weight(0.9f)
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+                        modifier = Modifier.weight(0.9f).height(34.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            Text("🔍", fontSize = 10.sp)
+                            Text("🔍", fontSize = 9.sp)
                             Spacer(modifier = Modifier.width(2.dp))
                             Text(
                                 text = if (isSearchVisible) "Hide" else "Search",
-                                color = Color.White,
-                                fontSize = 10.sp,
+                                color = if (isSearchVisible) Color.White else Color(0xFF0F172A),
+                                fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -2509,16 +2717,15 @@ fun TrackerSessionView(
                     OutlinedTextField(
                         value = viewModel.filterCategoryQuery,
                         onValueChange = { viewModel.filterCategoryQuery = it },
-                        label = { Text("ক্যাটাগরি ফিল্টার করুন", fontSize = 11.sp) },
-                        placeholder = { Text("যেমন: খাবার", fontSize = 11.sp) },
-                        trailingIcon = { Text("🔍", modifier = Modifier.padding(end = 12.dp)) },
+                        placeholder = { Text("e.g. food", fontSize = 11.sp) },
+                        trailingIcon = { Text("🔍", modifier = Modifier.padding(end = 8.dp), fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 13.sp),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF3498DB),
-                            unfocusedBorderColor = Color(0xFF3E3E44)
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
                         )
                     )
                 }
@@ -2526,80 +2733,92 @@ fun TrackerSessionView(
         }
 
         // 3. Transactions Record Card List
-
         Text(
-            text = "রেকর্ড তালিকা (${convertToBengaliNumber(filteredTxList.size.toString())} টি পাওয়া গেছে)",
-            fontSize = 15.sp,
+            text = "📋 Records List (" + filteredTxList.size.toString() + " found)",
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
-            modifier = Modifier.padding(top = 8.dp)
+            color = Color(0xFF0F172A),
+            modifier = Modifier.padding(top = 4.dp)
         )
 
         if (filteredTxList.isEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22).copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, Color(0xFF2E2E34))
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(32.dp),
+                        .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("💸", fontSize = 42.sp)
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("💸", fontSize = 32.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "কোনো রেকর্ড খুঁজে পাওয়া যায়নি!",
-                        color = Color(0xFF9E9E9E),
-                        fontSize = 14.sp,
+                        text = "No records found!",
+                        color = Color(0xFF475569),
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = "নতুন আয় বা ব্যয় এন্ট্রি যুক্ত করুন অথবা আপনার ফিল্টার পরিবর্তন করুন।",
-                        color = Color(0xFF6E6E74),
-                        fontSize = 11.sp,
+                        text = "Add new income or expense entries or change your filters.",
+                        color = Color(0xFF64748B),
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.padding(top = 2.dp)
                     )
                 }
             }
         } else {
             val itemsToShow = if (viewModel.showAllTransactions) filteredTxList else filteredTxList.take(5)
 
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 itemsToShow.forEach { tx ->
+                    val isPersonal = tx.personName.isNotEmpty() &&
+                            !tx.personName.trim().equals("সাধারণ", ignoreCase = true) &&
+                            !tx.personName.trim().equals("general", ignoreCase = true)
                     TransactionItemRow(
                         transaction = tx,
-                        onEdit = { viewModel.startEditingTransaction(tx) },
+                        onEdit = {
+                            if (isPersonal) {
+                                Toast.makeText(context, "Please edit/delete dues, debts, and repayments in the Debts/Credits tab.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.startEditingTransaction(tx)
+                            }
+                        },
                         onDelete = {
-                            viewModel.confirmDelete(
-                                title = "লেনদেন ডিলিট নিশ্চিতকরণ",
-                                message = "আপনি কি এই লেনদেনটি ডিলিট করতে চান?",
-                                action = {
-                                    viewModel.deleteTransactionWithUndo(tx, showSnackbarWithUndo)
-                                }
-                            )
+                            if (isPersonal) {
+                                Toast.makeText(context, "Please edit/delete dues, debts, and repayments in the Debts/Credits tab.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.confirmDelete(
+                                    title = "Delete Transaction",
+                                    message = "Are you sure you want to delete this transaction?",
+                                    action = {
+                                        viewModel.deleteTransactionWithUndo(tx, showSnackbarWithUndo)
+                                    }
+                                )
+                            }
                         },
                         onDoubleClick = { viewModel.selectedTransactionForDetails = tx }
                     )
                 }
 
                 if (filteredTxList.size > 5) {
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Button(
                         onClick = { viewModel.showAllTransactions = !viewModel.showAllTransactions },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A32)),
-                        shape = RoundedCornerShape(10.dp)
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = if (viewModel.showAllTransactions) "কম রেকর্ড দেখুন 🔼" else "সব রেকর্ড দেখুন 🔽",
+                            text = if (viewModel.showAllTransactions) "Show Less 🔼" else "Show All 🔽",
                             color = Color.White,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -2607,7 +2826,7 @@ fun TrackerSessionView(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         // 4. Daily Income & Expense Summary List Card
         var showAllDailySummaries by remember { mutableStateOf(false) }
@@ -2615,129 +2834,89 @@ fun TrackerSessionView(
 
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-            border = BorderStroke(1.dp, Color(0xFF2E2E34))
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0))
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(8.dp)) {
                 Text(
-                    text = "📅 দৈনিক হিসাব সারসংক্ষেপ (${convertToBengaliNumber(activeDailySummaries.size.toString())} দিন)",
-                    fontSize = 15.sp,
+                    text = "📅 Daily Summary (" + activeDailySummaries.size.toString() + " days)",
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color(0xFF0F172A)
                 )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Table Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF121214), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "তারিখ",
-                        fontSize = 11.sp,
-                        color = Color(0xFF9E9E9E),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1.3f)
-                    )
-                    Text(
-                        text = "আয়",
-                        fontSize = 11.sp,
-                        color = Color(0xFF2ECC71),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1.0f),
-                        textAlign = TextAlign.End
-                    )
-                    Text(
-                        text = "ব্যয়",
-                        fontSize = 11.sp,
-                        color = Color(0xFFE74C3C),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1.0f),
-                        textAlign = TextAlign.End
-                    )
-                    Text(
-                        text = "ব্যালেন্স",
-                        fontSize = 11.sp,
-                        color = Color(0xFF3498DB),
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1.2f),
-                        textAlign = TextAlign.End
-                    )
-                }
-
                 Spacer(modifier = Modifier.height(6.dp))
 
-                if (activeDailySummaries.isEmpty()) {
-                    Text(
-                        text = "কোনো দৈনিক সারসংক্ষেপ পাওয়া যায়নি!",
-                        color = Color(0xFF6E6E74),
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 24.dp)
-                    )
-                } else {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Header Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "Date", fontSize = 10.sp, color = Color(0xFF64748B), modifier = Modifier.weight(1.2f), fontWeight = FontWeight.Bold)
+                        Text(text = "Income", fontSize = 10.sp, color = Color(0xFF2E7D32), modifier = Modifier.weight(1.0f), textAlign = TextAlign.End, fontWeight = FontWeight.Bold)
+                        Text(text = "Expense", fontSize = 10.sp, color = Color(0xFFC62828), modifier = Modifier.weight(1.0f), textAlign = TextAlign.End, fontWeight = FontWeight.Bold)
+                        Text(text = "Balance", fontSize = 10.sp, color = Color(0xFF0F172A), modifier = Modifier.weight(1.2f), textAlign = TextAlign.End, fontWeight = FontWeight.Bold)
+                    }
+                    
+                    Divider(color = Color(0xFFE2E8F0), thickness = 1.dp)
+
                     dailySummariesToShow.forEach { summary ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                                .padding(vertical = 2.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
                                 text = summary.dateString,
-                                fontSize = 12.sp,
-                                color = Color.White,
-                                modifier = Modifier.weight(1.3f),
+                                fontSize = 10.sp,
+                                color = Color(0xFF334155),
+                                modifier = Modifier.weight(1.2f),
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = if (summary.income > 0.0) "৳${convertToBengaliNumber(String.format(Locale.US, "%,.0f", summary.income))}" else "০",
-                                fontSize = 12.sp,
-                                color = if (summary.income > 0.0) Color(0xFF2ECC71) else Color(0xFF9E9E9E),
+                                text = if (summary.income > 0.0) "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", summary.income)) else "0",
+                                fontSize = 10.sp,
+                                color = if (summary.income > 0.0) Color(0xFF2E7D32) else Color(0xFF94A3B8),
                                 modifier = Modifier.weight(1.0f),
                                 textAlign = TextAlign.End,
                                 fontWeight = if (summary.income > 0.0) FontWeight.Bold else FontWeight.Normal
                             )
                             Text(
-                                text = if (summary.expense > 0.0) "৳${convertToBengaliNumber(String.format(Locale.US, "%,.0f", summary.expense))}" else "০",
-                                fontSize = 12.sp,
-                                color = if (summary.expense > 0.0) Color(0xFFE74C3C) else Color(0xFF9E9E9E),
+                                text = if (summary.expense > 0.0) "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", summary.expense)) else "0",
+                                fontSize = 10.sp,
+                                color = if (summary.expense > 0.0) Color(0xFFC62828) else Color(0xFF94A3B8),
                                 modifier = Modifier.weight(1.0f),
                                 textAlign = TextAlign.End,
                                 fontWeight = if (summary.expense > 0.0) FontWeight.Bold else FontWeight.Normal
                             )
                             Text(
-                                text = "৳${convertToBengaliNumber(String.format(Locale.US, "%,.0f", summary.balanceAtEnd))}",
-                                fontSize = 12.sp,
-                                color = if (summary.balanceAtEnd >= 0.0) Color(0xFF2ECC71) else Color(0xFFE74C3C),
+                                text = "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", summary.balanceAtEnd)),
+                                fontSize = 10.sp,
+                                color = if (summary.balanceAtEnd >= 0.0) Color(0xFF2E7D32) else Color(0xFFC62828),
                                 modifier = Modifier.weight(1.2f),
                                 textAlign = TextAlign.End,
                                 fontWeight = FontWeight.Bold
                             )
                         }
-                        Divider(color = Color(0xFF2E2E34), thickness = 0.5.dp)
+                        Divider(color = Color(0xFFE2E8F0), thickness = 0.5.dp)
                     }
 
                     if (activeDailySummaries.size > 7) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Button(
                             onClick = { showAllDailySummaries = !showAllDailySummaries },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A32)),
-                            shape = RoundedCornerShape(10.dp)
+                            modifier = Modifier.fillMaxWidth().height(34.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF1F5F9)),
+                            shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
-                                text = if (showAllDailySummaries) "কম সারসংক্ষেপ দেখুন 🔼" else "সব দৈনিক সারসংক্ষেপ দেখুন 🔽",
-                                color = Color.White,
-                                fontSize = 12.sp,
+                                text = if (showAllDailySummaries) "Show Less 🔼" else "Show All 🔽",
+                                color = Color(0xFF0F172A),
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -2748,10 +2927,7 @@ fun TrackerSessionView(
     }
 }
 
-// ============================================================================
-// TRANSACTION CARD ELEMENT WITH DOUBLE CLICK DETECTOR
-// ============================================================================
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TransactionItemRow(
     transaction: TransactionEntity,
@@ -2759,121 +2935,103 @@ fun TransactionItemRow(
     onDelete: () -> Unit,
     onDoubleClick: () -> Unit
 ) {
-    val dateString = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale("bn")).format(Date(transaction.dateTime))
+    val dateString = SimpleDateFormat("dd MMM, hh:mm a", Locale.US).format(Date(transaction.dateTime))
     val isIncome = transaction.type == "INCOME"
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .pointerInput(transaction.id) {
-                detectTapGestures(
-                    onDoubleTap = { onDoubleClick() }
-                )
-            },
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
+            .combinedClickable(
+                onClick = onDoubleClick,
+                onDoubleClick = onDoubleClick,
+                onLongClick = onDelete
+            ),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
         border = BorderStroke(
             width = 1.dp,
-            color = if (isIncome) Color(0xFF2ECC71).copy(alpha = 0.4f) else Color(0xFFE74C3C).copy(alpha = 0.4f)
+            color = if (isIncome) Color(0xFF2E7D32).copy(alpha = 0.12f) else Color(0xFFC62828).copy(alpha = 0.12f)
         )
     ) {
+        val startColor = if (isIncome) Color(0xFF2E7D32).copy(alpha = 0.15f) else Color(0xFFC62828).copy(alpha = 0.15f)
+        val endColor = Color.Transparent
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .height(IntrinsicSize.Min)
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(startColor, endColor),
+                        startX = 0f,
+                        endX = 400f
+                    )
+                ),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Left block (Color bar indicator, info)
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                // Color bar indicator
-                Box(
-                    modifier = Modifier
-                        .width(4.dp)
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(if (isIncome) Color(0xFF2ECC71) else Color(0xFFE74C3C))
-                )
+            // Left color bar, flush to the left border
+            Box(
+                modifier = Modifier
+                    .width(5.dp)
+                    .fillMaxHeight()
+                    .background(if (isIncome) Color(0xFF2E7D32) else Color(0xFFC62828))
+            )
 
-                Spacer(modifier = Modifier.width(12.dp))
+            // Content padding starts here
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 6.dp, horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Left block: category name & details
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Column {
+                        val isPersonal = transaction.personName.isNotEmpty() &&
+                                !transaction.personName.trim().equals("সাধারণ", ignoreCase = true) &&
+                                !transaction.personName.trim().equals("general", ignoreCase = true)
 
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
+                        val dispCategory = if (isPersonal) transaction.personName else transaction.category
+                        val dispDetails = if (isPersonal) transaction.category else ""
+
                         Text(
-                            text = transaction.category,
-                            color = Color.White,
-                            fontSize = 14.sp,
+                            text = dispCategory,
+                            color = Color(0xFF0F172A),
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (transaction.personName.isNotEmpty()) {
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF3498DB).copy(alpha = 0.12f)),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = transaction.personName,
-                                    color = Color(0xFF3498DB),
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-                    Text(
-                        text = dateString,
-                        color = Color(0xFF9E9E9E),
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
-                    if (transaction.note.isNotEmpty()) {
                         Text(
-                            text = transaction.note,
-                            color = Color(0xFFCCCCCC),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 4.dp),
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis
+                            text = convertToBengaliNumber(dateString),
+                            color = Color(0xFF64748B),
+                            fontSize = 8.sp,
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                     }
                 }
-            }
 
-            // Right block (Amount and controls)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "${if (isIncome) "+" else "-"}৳${String.format(Locale.US, "%,.2f", transaction.amount)}",
-                    color = if (isIncome) Color(0xFF2ECC71) else Color(0xFFE74C3C),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                // Edit Button
-                IconButton(
-                    onClick = onEdit,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(Color(0xFF2A2A30), CircleShape)
+                // Right block
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("✏️", fontSize = 12.sp)
-                }
+                    Text(
+                        text = "${if (isIncome) "+" else "-"} ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", transaction.amount)),
+                        color = if (isIncome) Color(0xFF2E7D32) else Color(0xFFC62828),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black
+                    )
 
-                // Delete Button
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(Color(0xFFE74C3C).copy(alpha = 0.15f), CircleShape)
-                ) {
-                    Text("🗑️", fontSize = 12.sp)
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(Color(0xFF1976D2).copy(alpha = 0.08f), CircleShape)
+                    ) {
+                        Text("✏️", fontSize = 10.sp)
+                    }
                 }
             }
         }
@@ -2892,19 +3050,8 @@ fun NoticeSessionView(
     showSnackbarWithUndo: (String, () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
-    var noticeContentInputState by remember { mutableStateOf(TextFieldValue(viewModel.noticeContentInput)) }
-
-    // Sync input states
-    LaunchedEffect(noticeContentInputState.text) {
-        viewModel.noticeContentInput = noticeContentInputState.text
-    }
-
-    LaunchedEffect(viewModel.noticeContentInput) {
-        if (viewModel.noticeContentInput.isEmpty() && noticeContentInputState.text.isNotEmpty()) {
-            noticeContentInputState = TextFieldValue("")
-        } else if (viewModel.noticeContentInput.isNotEmpty() && noticeContentInputState.text != viewModel.noticeContentInput) {
-            noticeContentInputState = TextFieldValue(viewModel.noticeContentInput)
-        }
+    var noticeContentInputState by remember(viewModel.showAddNoticeDialog, viewModel.editingNotice) {
+        mutableStateOf(TextFieldValue(viewModel.noticeContentInput))
     }
 
     // Note Creator Dialog
@@ -2919,25 +3066,25 @@ fun NoticeSessionView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(12.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
-                border = BorderStroke(1.dp, Color(0xFF2E2E34))
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val dialogTitle = if (viewModel.editingNotice != null) "📓 নোট সংশোধন করুন" else "📓 নতুন নোট ও চেকলিস্ট"
+                        val dialogTitle = if (viewModel.editingNotice != null) "📓 Edit Note" else "📓 New Note & Checklist"
                         Text(
                             text = dialogTitle,
-                            fontSize = 16.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = Color(0xFF0F172A)
                         )
                         IconButton(
                             onClick = { 
@@ -2948,7 +3095,7 @@ fun NoticeSessionView(
                             },
                             modifier = Modifier.size(24.dp)
                         ) {
-                            Text("❌", fontSize = 12.sp)
+                            Text("❌", fontSize = 11.sp)
                         }
                     }
 
@@ -2956,38 +3103,41 @@ fun NoticeSessionView(
                     OutlinedTextField(
                         value = viewModel.noticeTitleInput,
                         onValueChange = { viewModel.noticeTitleInput = it },
-                        label = { Text("Header") },
-                        placeholder = { Text("Header") },
+                        placeholder = { Text("Header", fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF3498DB),
-                            unfocusedBorderColor = Color(0xFF3E3E44)
-                        )
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
                     )
 
-                    // Content input field (with TextFieldValue state)
+                    // Content input field
                     OutlinedTextField(
                         value = noticeContentInputState,
-                        onValueChange = { noticeContentInputState = it },
-                        label = { Text("Details") },
-                        placeholder = { Text("Details") },
+                        onValueChange = { 
+                            noticeContentInputState = it 
+                            viewModel.noticeContentInput = it.text
+                        },
+                        placeholder = { Text("Details", fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFF3498DB),
-                            unfocusedBorderColor = Color(0xFF3E3E44)
-                        )
+                            focusedTextColor = Color(0xFF0F172A),
+                            unfocusedTextColor = Color(0xFF0F172A),
+                            focusedBorderColor = Color(0xFF1976D2),
+                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        ),
+                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
                     )
 
                     // Checkbox helper row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.Start,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Button(
@@ -3011,90 +3161,84 @@ fun NoticeSessionView(
                                     text = newText,
                                     selection = TextRange(newCursorPosition)
                                 )
+                                viewModel.noticeContentInput = newText
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A30)),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF1F5F9)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(28.dp)
                         ) {
-                            Text("☑️ চেকবক্স যোগ করুন", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("☑️ Add Checkbox", fontSize = 10.sp, color = Color(0xFF0F172A), fontWeight = FontWeight.Bold)
                         }
-
-                        Text(
-                            text = "💡 লাইনের শুরুতে '[ ]' দিলে চেকবক্স হবে",
-                            fontSize = 10.sp,
-                            color = Color(0xFF9E9E9E)
-                        )
                     }
 
                     Button(
                         onClick = {
                             if (viewModel.noticeContentInput.trim().isEmpty() && viewModel.noticeTitleInput.trim().isEmpty()) {
-                                Toast.makeText(context, "অনুগ্রহ করে শিরোনাম বা নোটের বিবরণ লিখুন!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Please enter a header or details!", Toast.LENGTH_SHORT).show()
                             } else {
-                                val msg = if (viewModel.editingNotice != null) "নোটবুক-এ আপডেট করা হয়েছে! 📓" else "নোটবুক-এ যুক্ত করা হয়েছে! 📓"
+                                val msg = if (viewModel.editingNotice != null) "Note updated successfully! 📓" else "Note added successfully! 📓"
                                 viewModel.saveNotice()
                                 viewModel.showAddNoticeDialog = false
                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3498DB)),
-                        shape = RoundedCornerShape(12.dp)
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        val buttonText = if (viewModel.editingNotice != null) "নোটবুক-এ আপডেট করুন 📓" else "নোটবুক-এ যোগ করুন 📓"
-                        Text(buttonText, fontWeight = FontWeight.Bold, color = Color.White)
+                        val buttonText = if (viewModel.editingNotice != null) "Update Note 📓" else "Add Note 📓"
+                        Text(buttonText, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 11.sp)
                     }
                 }
             }
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        // 2. Notebook List Title
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
-            text = "সংরক্ষিত নোটসমূহ (${notices.size} টি)",
-            fontSize = 15.sp,
+            text = "📋 Saved Notes (" + notices.size.toString() + ")",
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
-            modifier = Modifier.padding(top = 8.dp)
+            color = Color(0xFF0F172A),
+            modifier = Modifier.padding(top = 4.dp)
         )
 
         if (notices.isEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22).copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, Color(0xFF2E2E34))
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9)),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(32.dp),
+                        .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text("📓", fontSize = 42.sp)
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("📓", fontSize = 32.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "আপনার নোটবুক খালি!",
-                        color = Color(0xFF9E9E9E),
-                        fontSize = 14.sp,
+                        text = "Your notebook is empty!",
+                        color = Color(0xFF475569),
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = "আপনার যেকোনো নোট, বাজারের চেকলিস্ট অথবা টার্গেট এখানে সংরক্ষণ করে রাখুন।",
-                        color = Color(0xFF6E6E74),
-                        fontSize = 11.sp,
+                        text = "Save your notes, shopping lists, or targets here. Tap the plus (+) button to start.",
+                        color = Color(0xFF64748B),
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.padding(top = 2.dp)
                     )
                 }
             }
         } else {
-            // Display notices in a clean single vertical list
             Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 notices.forEach { notice ->
@@ -3102,8 +3246,8 @@ fun NoticeSessionView(
                         notice = notice,
                         onDelete = {
                             viewModel.confirmDelete(
-                                title = "নোট মুছে ফেলার নিশ্চিতকরণ",
-                                message = "আপনি কি এই নোটটি মুছে ফেলতে চান?",
+                                title = "Delete Note",
+                                message = "Are you sure you want to delete this note?",
                                 action = {
                                     viewModel.deleteNoticeWithUndo(notice, showSnackbarWithUndo)
                                 }
@@ -3135,10 +3279,6 @@ fun NoticeSessionView(
     }
 }
 
-// ============================================================================
-// STICKY NOTE CARD (NOTEBOOK CARD WITH CHECKBOX SUPPORT)
-// ============================================================================
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StickyNoteCard(
@@ -3148,9 +3288,7 @@ fun StickyNoteCard(
     onUpdate: (NoticeEntity) -> Unit
 ) {
     var isExpanded by remember { mutableStateOf(false) }
-    
-    val dateString = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale("bn")).format(Date(notice.timestamp))
-    val stickyBgColor = Color(android.graphics.Color.parseColor(notice.colorHex))
+    val dateString = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date(notice.timestamp))
 
     val parsedTitle = if (notice.content.contains("===NOTE_TITLE===")) {
         notice.content.substringBefore("===NOTE_TITLE===")
@@ -3167,9 +3305,9 @@ fun StickyNoteCard(
     val displayTitle = parsedTitle.ifBlank {
         val clean = parsedContent.replace(Regex("\\[[ x]\\]"), "").trim()
         if (clean.isNotEmpty()) {
-            if (clean.length > 30) clean.take(30) + "..." else clean
+            if (clean.length > 25) clean.take(25) + "..." else clean
         } else {
-            "নামহীন নোট 📝"
+            "Untitled Note 📝"
         }
     }
 
@@ -3180,16 +3318,15 @@ fun StickyNoteCard(
                 onClick = { isExpanded = !isExpanded },
                 onLongClick = onDelete
             ),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = stickyBgColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
+                .padding(10.dp)
         ) {
-            // Header: Only show Title when collapsed or expanded, with indicator
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3199,12 +3336,12 @@ fun StickyNoteCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(text = "📓", fontSize = 14.sp)
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "📓", fontSize = 11.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = displayTitle,
-                        color = Color.Black,
-                        fontSize = 14.sp,
+                        color = Color(0xFF0F172A),
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = if (isExpanded) Int.MAX_VALUE else 1,
                         overflow = TextOverflow.Ellipsis
@@ -3213,27 +3350,26 @@ fun StickyNoteCard(
                 
                 Text(
                     text = if (isExpanded) "▲" else "▼",
-                    color = Color.Black.copy(alpha = 0.6f),
-                    fontSize = 11.sp,
+                    color = Color(0xFF64748B),
+                    fontSize = 9.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            // Full view shown only when expanded
             if (isExpanded) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = Color.Black.copy(alpha = 0.15f), thickness = 1.dp)
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                Divider(color = Color(0xFFE2E8F0), thickness = 0.5.dp)
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(text = "📅 $dateString", fontSize = 9.sp, color = Color.Black.copy(alpha = 0.6f))
+                    Text(text = "📅 " + convertToBengaliNumber(dateString), fontSize = 8.sp, color = Color(0xFF64748B))
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 val lines = parsedContent.lines()
                 val hasChecklist = lines.any { it.startsWith("[ ] ") || it.startsWith("[x] ") }
@@ -3268,17 +3404,17 @@ fun StickyNoteCard(
                                             onUpdate(notice.copy(content = newCombined))
                                         },
                                         colors = CheckboxDefaults.colors(
-                                            checkedColor = Color.Black.copy(alpha = 0.8f),
-                                            uncheckedColor = Color.Black.copy(alpha = 0.6f),
-                                            checkmarkColor = stickyBgColor
+                                            checkedColor = Color(0xFF1976D2),
+                                            uncheckedColor = Color(0xFF64748B),
+                                            checkmarkColor = Color.White
                                         ),
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = text,
-                                        color = if (isChecked) Color.Black.copy(alpha = 0.4f) else Color.Black,
-                                        fontSize = 13.sp,
+                                        color = if (isChecked) Color(0xFF94A3B8) else Color(0xFF334155),
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Medium,
                                         textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
                                     )
@@ -3287,9 +3423,9 @@ fun StickyNoteCard(
                                 if (line.trim().isNotEmpty()) {
                                     Text(
                                         text = line,
-                                        color = Color.Black,
-                                        fontSize = 13.sp,
-                                        lineHeight = 18.sp,
+                                        color = Color(0xFF334155),
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp,
                                         fontWeight = FontWeight.Medium,
                                         modifier = Modifier.padding(vertical = 2.dp)
                                     )
@@ -3300,23 +3436,23 @@ fun StickyNoteCard(
                 } else {
                     Text(
                         text = parsedContent,
-                        color = Color.Black,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
+                        color = Color(0xFF334155),
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
                         fontWeight = FontWeight.Medium
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     IconButton(
                         onClick = onEdit,
                         modifier = Modifier
-                            .size(28.dp)
-                            .background(Color.Black.copy(alpha = 0.1f), CircleShape)
+                            .size(26.dp)
+                            .background(Color(0xFF1976D2).copy(alpha = 0.08f), CircleShape)
                     ) {
-                        Text("✏️", fontSize = 11.sp)
+                        Text("✏️", fontSize = 9.sp)
                     }
                 }
             }
@@ -3324,81 +3460,144 @@ fun StickyNoteCard(
     }
 }
 
-
-// ============================================================================
-// DOUBLE TAP DETAILS POPUP DIALOG
-// ============================================================================
-
 @Composable
 fun DoubleTapDetailsDialog(transaction: TransactionEntity, onDismiss: () -> Unit) {
-    val formattedDate = SimpleDateFormat("dd MMMM yyyy, hh:mm a", Locale("bn")).format(Date(transaction.dateTime))
+    val formattedDate = SimpleDateFormat("dd MMMM yyyy, hh:mm a", Locale.US).format(Date(transaction.dateTime))
     val isIncome = transaction.type == "INCOME"
+    val isPersonal = transaction.personName.isNotEmpty() &&
+            !transaction.personName.trim().equals("সাধারণ", ignoreCase = true) &&
+            !transaction.personName.trim().equals("general", ignoreCase = true)
+
+    val displayDetails = if (isPersonal) {
+        if (transaction.category.isNotBlank()) transaction.category else "No details provided."
+    } else {
+        if (transaction.note.isNotBlank()) transaction.note else "No details provided."
+    }
+
+    val displayCategory = if (isPersonal) transaction.personName else transaction.category
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(14.dp),
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E22)),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
             border = BorderStroke(
                 width = 1.dp,
-                color = if (isIncome) Color(0xFF2ECC71) else Color(0xFFE74C3C)
+                color = if (isIncome) Color(0xFF2E7D32).copy(alpha = 0.5f) else Color(0xFFC62828).copy(alpha = 0.5f)
             )
         ) {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(16.dp)
             ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "রেকর্ড বিস্তারিত বিবরণ 🔎",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = Color.White
-                    )
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
-                        Text("❌", fontSize = 12.sp)
-                    }
-                }
-
-                Divider(color = Color(0xFF2E2E34))
-
-                // Amount (মোট টাকা)
-                Column {
-                    Text(text = "মোট টাকা:", fontSize = 11.sp, color = Color(0xFF9E9E9E))
-                    Text(
-                        text = "৳ ${String.format(Locale.US, "%,.2f", transaction.amount)} (${if (isIncome) "আয়" else "ব্যয়"})",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isIncome) Color(0xFF2ECC71) else Color(0xFFE74C3C)
-                    )
-                }
-
-                // Date Time (তারিখ-সময়)
-                Column {
-                    Text(text = "তারিখ ও সময়:", fontSize = 11.sp, color = Color(0xFF9E9E9E))
-                    Text(text = formattedDate, fontSize = 13.sp, color = Color.White, fontWeight = FontWeight.Medium)
-                }
-
-
-
-                Button(
+                // Close button at top right
+                IconButton(
                     onClick = onDismiss,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A30)),
-                    shape = RoundedCornerShape(10.dp)
+                        .align(Alignment.TopEnd)
+                        .size(24.dp)
                 ) {
-                    Text("বন্ধ করুন", color = Color.White)
+                    Text("❌", fontSize = 11.sp)
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Header Title
+                    Text(
+                        text = "Transaction Details 🔎",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFF64748B)
+                    )
+
+                    // Main Content: Details (Note)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFF8FAFC), RoundedCornerShape(10.dp))
+                            .padding(14.dp)
+                    ) {
+                        Text(
+                            text = "Details / বিবরণ:",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF64748B)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = displayDetails,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF0F172A),
+                            lineHeight = 18.sp
+                        )
+                    }
+
+                    // Bottom info: Category on left, Money & Date small in the right corner
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        // Category (on the bottom left)
+                        Column {
+                            Text(
+                                text = "Category",
+                                fontSize = 8.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                            Text(
+                                text = displayCategory,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF334155)
+                            )
+                            if (isPersonal) {
+                                Text(
+                                    text = "Person: ${transaction.personName}",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFF1976D2)
+                                )
+                            }
+                        }
+
+                        // Money & Date in a corner (bottom right, small)
+                        Column(
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = "Amount: " + (if (isIncome) "+" else "-") + "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", transaction.amount)),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isIncome) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = convertToBengaliNumber(formattedDate),
+                                fontSize = 9.sp,
+                                color = Color(0xFF64748B)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Button(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(36.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF1F5F9)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Close", color = Color(0xFF0F172A), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -3412,49 +3611,49 @@ fun DoubleTapDetailsDialog(transaction: TransactionEntity, onDismiss: () -> Unit
 @Composable
 fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
     NavigationBar(
-        containerColor = Color(0xFF1E1E22),
+        containerColor = Color.White,
         tonalElevation = 8.dp,
         modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         NavigationBarItem(
             selected = activeTab == "ACCOUNT",
             onClick = { onTabSelected("ACCOUNT") },
-            icon = { Text("👥", fontSize = 20.sp) },
-            label = { Text("দেনা-পাওনা", fontSize = 11.sp) },
+            icon = { Text("👥", fontSize = 18.sp) },
+            label = { Text("Debts/Credits", fontSize = 10.sp) },
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF2ECC71),
-                unselectedIconColor = Color(0xFF9E9E9E),
-                selectedTextColor = Color(0xFF2ECC71),
-                unselectedTextColor = Color(0xFF9E9E9E),
-                indicatorColor = Color(0xFF2ECC71).copy(alpha = 0.12f)
+                selectedIconColor = Color(0xFF2E7D32),
+                unselectedIconColor = Color(0xFF64748B),
+                selectedTextColor = Color(0xFF2E7D32),
+                unselectedTextColor = Color(0xFF64748B),
+                indicatorColor = Color(0xFF2E7D32).copy(alpha = 0.12f)
             )
         )
 
         NavigationBarItem(
             selected = activeTab == "TRACKER",
             onClick = { onTabSelected("TRACKER") },
-            icon = { Text("💸", fontSize = 20.sp) },
-            label = { Text("আয় ও ব্যয়", fontSize = 11.sp) },
+            icon = { Text("💸", fontSize = 18.sp) },
+            label = { Text("Tracker", fontSize = 10.sp) },
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF2ECC71),
-                unselectedIconColor = Color(0xFF9E9E9E),
-                selectedTextColor = Color(0xFF2ECC71),
-                unselectedTextColor = Color(0xFF9E9E9E),
-                indicatorColor = Color(0xFF2ECC71).copy(alpha = 0.12f)
+                selectedIconColor = Color(0xFF2E7D32),
+                unselectedIconColor = Color(0xFF64748B),
+                selectedTextColor = Color(0xFF2E7D32),
+                unselectedTextColor = Color(0xFF64748B),
+                indicatorColor = Color(0xFF2E7D32).copy(alpha = 0.12f)
             )
         )
 
         NavigationBarItem(
             selected = activeTab == "NOTICE",
             onClick = { onTabSelected("NOTICE") },
-            icon = { Text("📓", fontSize = 20.sp) },
-            label = { Text("নোটবুক", fontSize = 11.sp) },
+            icon = { Text("📓", fontSize = 18.sp) },
+            label = { Text("Notebook", fontSize = 10.sp) },
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF2ECC71),
-                unselectedIconColor = Color(0xFF9E9E9E),
-                selectedTextColor = Color(0xFF2ECC71),
-                unselectedTextColor = Color(0xFF9E9E9E),
-                indicatorColor = Color(0xFF2ECC71).copy(alpha = 0.12f)
+                selectedIconColor = Color(0xFF2E7D32),
+                unselectedIconColor = Color(0xFF64748B),
+                selectedTextColor = Color(0xFF2E7D32),
+                unselectedTextColor = Color(0xFF64748B),
+                indicatorColor = Color(0xFF2E7D32).copy(alpha = 0.12f)
             )
         )
     }

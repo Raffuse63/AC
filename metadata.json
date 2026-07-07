@@ -1,6 +1,6 @@
 {
   "name": "Finance Manager",
-  "description": "একটি সম্পূর্ণ এবং প্রফেশনাল অল-ইন-ওয়ান ফিন্যান্স ম্যানেজার অ্যাপ্লিকেশন।",
+  "description": "A complete and professional all-in-one Finance Manager application.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
