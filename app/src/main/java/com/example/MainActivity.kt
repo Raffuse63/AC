@@ -5,12 +5,16 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -25,6 +29,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -42,6 +47,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,6 +57,20 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.ValueEventListener
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.auth.api.signin.GoogleSignInClient
+import com.google.firebase.auth.GoogleAuthProvider
+import coil.compose.rememberAsyncImagePainter
+import android.content.pm.PackageManager
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -156,20 +176,20 @@ abstract class FinanceDatabase : RoomDatabase() {
     abstract fun financeDao(): FinanceDao
 
     companion object {
-        @Volatile
-        private var INSTANCE: FinanceDatabase? = null
+        private val INSTANCES = HashMap<String, FinanceDatabase>()
 
-        fun getDatabase(context: Context): FinanceDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    FinanceDatabase::class.java,
-                    "finance_database"
-                )
-                .fallbackToDestructiveMigration()
-                .build()
-                INSTANCE = instance
-                instance
+        fun getDatabase(context: Context, accountName: String = "Default"): FinanceDatabase {
+            val dbName = if (accountName == "Default") "finance_database" else "finance_database_$accountName"
+            return synchronized(this) {
+                INSTANCES.getOrPut(dbName) {
+                    Room.databaseBuilder(
+                        context.applicationContext,
+                        FinanceDatabase::class.java,
+                        dbName
+                    )
+                    .fallbackToDestructiveMigration()
+                    .build()
+                }
             }
         }
     }
@@ -192,8 +212,105 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
     val persons = dao.getAllPersonsFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    // Firebase and Google Sign-In state
+    var currentUserState by mutableStateOf<FirebaseUser?>(FirebaseAuth.getInstance().currentUser)
+    var isSyncingFromCloud by mutableStateOf(false)
+    var isConnectingToCloud by mutableStateOf(false)
+
+    init {
+        // Observe local database changes and upload to cloud if signed in
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(transactions, persons, notices, profile) { t, p, n, pr ->
+                // Just trigger when any of them change
+                true
+            }.collect {
+                val user = FirebaseAuth.getInstance().currentUser
+                if (user != null && !isSyncingFromCloud) {
+                    val json = generateBackupJsonString()
+                    if (json.isNotEmpty()) {
+                        val dbRef = FirebaseDatabase.getInstance("https://overtime-9a9a5-default-rtdb.asia-southeast1.firebasedatabase.app")
+                            .getReference("users")
+                            .child(user.uid)
+                            .child("data_v1")
+                        dbRef.setValue(json)
+                    }
+                }
+            }
+        }
+
+        // Listen for Firebase Auth changes
+        FirebaseAuth.getInstance().addAuthStateListener { auth ->
+            val user = auth.currentUser
+            val oldUser = currentUserState
+            currentUserState = user
+            if (user != null && oldUser?.uid != user.uid) {
+                // User has signed in or switched, download from cloud
+                syncFromCloud(user.uid)
+            }
+        }
+    }
+
+    fun syncFromCloud(uid: String) {
+        isConnectingToCloud = true
+        val dbRef = FirebaseDatabase.getInstance("https://overtime-9a9a5-default-rtdb.asia-southeast1.firebasedatabase.app")
+            .getReference("users")
+            .child(uid)
+            .child("data_v1")
+        
+        dbRef.addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val jsonText = snapshot.getValue(String::class.java)
+                if (jsonText != null && jsonText.isNotEmpty()) {
+                    viewModelScope.launch {
+                        isSyncingFromCloud = true
+                        try {
+                            restoreFromJsonString(jsonText)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } finally {
+                            isSyncingFromCloud = false
+                            isConnectingToCloud = false
+                        }
+                    }
+                } else {
+                    // No data on cloud, save local data if not empty
+                    isConnectingToCloud = false
+                    val localJson = generateBackupJsonString()
+                    if (localJson.isNotEmpty() && (transactions.value.isNotEmpty() || persons.value.isNotEmpty() || notices.value.isNotEmpty())) {
+                        dbRef.setValue(localJson)
+                    }
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                isConnectingToCloud = false
+            }
+        })
+    }
+
+    fun logoutAndClearLocal(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            isSyncingFromCloud = true
+            try {
+                dao.clearTransactions()
+                dao.clearPersons()
+                dao.clearNotices()
+                dao.clearProfile()
+                // Default profile setup
+                dao.insertProfile(ProfileEntity(1, 0.0, 0.0, false))
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isSyncingFromCloud = false
+                FirebaseAuth.getInstance().signOut()
+                currentUserState = null
+                onComplete()
+            }
+        }
+    }
+
     // Active Navigation Tab: "ACCOUNT", "TRACKER", "NOTICE"
-    var currentTab by mutableStateOf("ACCOUNT")
+    var currentTab by mutableStateOf("TRACKER")
 
     // Account inputs (Legacy, kept to avoid compile errors, but visual account screen is removed)
     var openingBalanceInput by mutableStateOf("")
@@ -690,10 +807,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val db = FinanceDatabase.getDatabase(this)
-        val viewModelFactory = FinanceViewModelFactory(db.financeDao())
-
         setContent {
+            val context = LocalContext.current
+            val sharedPrefs = remember { context.getSharedPreferences("finance_prefs", Context.MODE_PRIVATE) }
+            var currentAccountName by remember { mutableStateOf(sharedPrefs.getString("current_account_name", "Default") ?: "Default") }
+
+            val db = remember(currentAccountName) { FinanceDatabase.getDatabase(context, currentAccountName) }
+            val viewModelFactory = remember(currentAccountName) { FinanceViewModelFactory(db.financeDao()) }
+
             MaterialTheme(
                 colorScheme = androidx.compose.material3.lightColorScheme(
                     primary = Color(0xFF2E7D32), // Darker green for light theme readability
@@ -705,9 +826,17 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 val viewModel: FinanceViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                    key = currentAccountName,
                     factory = viewModelFactory
                 )
-                FinanceApp(viewModel)
+                FinanceApp(
+                    viewModel = viewModel,
+                    currentAccountName = currentAccountName,
+                    onAccountChange = { newAccount ->
+                        sharedPrefs.edit().putString("current_account_name", newAccount).apply()
+                        currentAccountName = newAccount
+                    }
+                )
             }
         }
     }
@@ -719,13 +848,18 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FinanceApp(viewModel: FinanceViewModel) {
+fun FinanceApp(
+    viewModel: FinanceViewModel,
+    currentAccountName: String,
+    onAccountChange: (String) -> Unit
+) {
     val context = LocalContext.current
     val profileState by viewModel.profile.collectAsStateWithLifecycle()
     val transactionsState by viewModel.transactions.collectAsStateWithLifecycle()
     val noticesState by viewModel.notices.collectAsStateWithLifecycle()
 
     val profile = profileState ?: ProfileEntity()
+    var showDrawer by remember { mutableStateOf(false) }
 
     // ------------------------------------------------------------------------
     // CALCULATIONS
@@ -790,6 +924,46 @@ fun FinanceApp(viewModel: FinanceViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
+    // Launcher for saving backup JSON file
+    val createDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(viewModel.backupJsonText.toByteArray(Charsets.UTF_8))
+                    outputStream.flush()
+                }
+                Toast.makeText(context, "ব্যাকআপ ফাইল সফলভাবে সংরক্ষণ করা হয়েছে! 💾", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "ভুল হয়েছে: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // Launcher for selecting backup JSON file to restore
+    val openDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    val jsonText = inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    coroutineScope.launch {
+                        val success = viewModel.restoreFromJsonString(jsonText)
+                        if (success) {
+                            Toast.makeText(context, "ডাটা সফলভাবে রিস্টোর করা হয়েছে! 🔄", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(context, "রিস্টোর করা যায়নি। দয়া করে সঠিক ব্যাকআপ ফাইল নির্বাচন করুন।", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "ফাইল পড়তে সমস্যা হয়েছে: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     val showSnackbarWithUndo: (String, () -> Unit) -> Unit = { message, undoAction ->
         coroutineScope.launch {
             snackbarHostState.currentSnackbarData?.dismiss()
@@ -836,173 +1010,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
         )
     }
 
-    if (viewModel.showBackupDialog) {
-        AlertDialog(
-            onDismissRequest = { viewModel.showBackupDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("💾 Backup Data", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0F172A))
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Your data has been compiled into backup format. Copy it to your clipboard or share it using the buttons below.",
-                        fontSize = 12.sp,
-                        color = Color(0xFF475569)
-                    )
-                    
-                    // Display box
-                    OutlinedTextField(
-                        value = viewModel.backupJsonText,
-                        onValueChange = {},
-                        readOnly = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 10.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color(0xFF334155),
-                            unfocusedTextColor = Color(0xFF334155),
-                            focusedBorderColor = Color(0xFFCBD5E1),
-                            unfocusedBorderColor = Color(0xFFCBD5E1)
-                        )
-                    )
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                val clipData = android.content.ClipData.newPlainText("FinanceManagerBackup", viewModel.backupJsonText)
-                                clipboardManager.setPrimaryClip(clipData)
-                                Toast.makeText(context, "Backup copied to clipboard!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(vertical = 8.dp)
-                        ) {
-                            Text("📋 Copy", fontSize = 12.sp, color = Color.White)
-                        }
-                        
-                        Button(
-                            onClick = {
-                                val sendIntent = android.content.Intent().apply {
-                                    action = android.content.Intent.ACTION_SEND
-                                    putExtra(android.content.Intent.EXTRA_TEXT, viewModel.backupJsonText)
-                                    type = "text/plain"
-                                }
-                                val shareIntent = android.content.Intent.createChooser(sendIntent, "Share Backup JSON")
-                                context.startActivity(shareIntent)
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(vertical = 8.dp)
-                        ) {
-                            Text("📤 Share", fontSize = 12.sp, color = Color.White)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.showBackupDialog = false }) {
-                    Text("Close", color = Color(0xFF64748B))
-                }
-            },
-            containerColor = Color.White,
-            shape = RoundedCornerShape(16.dp)
-        )
-    }
 
-    if (viewModel.showRestoreDialog) {
-        AlertDialog(
-            onDismissRequest = { viewModel.showRestoreDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🔄 Restore Data", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0F172A))
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Paste your backup JSON text below to restore all sections (Transactions, People Dues, and Sticky Notes). Warning: This will overwrite current data!",
-                        fontSize = 11.sp,
-                        color = Color(0xFFC62828)
-                    )
-                    
-                    OutlinedTextField(
-                        value = viewModel.restoreInputText,
-                        onValueChange = { viewModel.restoreInputText = it },
-                        placeholder = { Text("Paste JSON here...", fontSize = 12.sp) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 11.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color(0xFF0F172A),
-                            unfocusedTextColor = Color(0xFF0F172A),
-                            focusedBorderColor = Color(0xFF1976D2),
-                            unfocusedBorderColor = Color(0xFFCBD5E1)
-                        )
-                    )
-                    
-                    Button(
-                        onClick = {
-                            val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            val clip = clipboardManager.primaryClip
-                            if (clip != null && clip.itemCount > 0) {
-                                val text = clip.getItemAt(0).text?.toString() ?: ""
-                                viewModel.restoreInputText = text
-                            } else {
-                                Toast.makeText(context, "Clipboard is empty!", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF64748B)),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(vertical = 8.dp)
-                    ) {
-                        Text("📋 Paste from Clipboard", fontSize = 12.sp, color = Color.White)
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (viewModel.restoreInputText.trim().isEmpty()) {
-                            Toast.makeText(context, "Please paste valid JSON text!", Toast.LENGTH_SHORT).show()
-                        } else {
-                            coroutineScope.launch {
-                                val success = viewModel.restoreFromJsonString(viewModel.restoreInputText)
-                                if (success) {
-                                    Toast.makeText(context, "Data Restored Successfully!", Toast.LENGTH_LONG).show()
-                                    viewModel.showRestoreDialog = false
-                                } else {
-                                    Toast.makeText(context, "Failed to restore. Invalid backup JSON!", Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text("Restore", color = Color.White, fontSize = 12.sp)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.showRestoreDialog = false }) {
-                    Text("Cancel", color = Color(0xFF64748B))
-                }
-            },
-            containerColor = Color.White,
-            shape = RoundedCornerShape(16.dp)
-        )
-    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -1071,11 +1079,30 @@ fun FinanceApp(viewModel: FinanceViewModel) {
             )
         }
     ) { innerPadding ->
+        var mainDragX by remember { mutableStateOf(0f) }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.White)
                 .padding(innerPadding)
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { mainDragX = 0f },
+                        onDragEnd = {
+                            if (mainDragX < -100f) {
+                                showDrawer = true
+                            }
+                        },
+                        onDragCancel = { mainDragX = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            mainDragX += dragAmount
+                            if (mainDragX < -100f) {
+                                showDrawer = true
+                            }
+                        }
+                    )
+                }
         ) {
             // Main Content Area with scroll state
             Column(
@@ -1087,14 +1114,18 @@ fun FinanceApp(viewModel: FinanceViewModel) {
             ) {
                 // Top App Header
                 AppHeader(
+                    viewModel = viewModel,
+                    currentAccountName = currentAccountName,
+                    onAccountChange = onAccountChange,
                     onBackupClick = {
                         viewModel.backupJsonText = viewModel.generateBackupJsonString()
-                        viewModel.showBackupDialog = true
+                        createDocumentLauncher.launch("finance_backup.json")
                     },
                     onRestoreClick = {
-                        viewModel.restoreInputText = ""
-                        viewModel.showRestoreDialog = true
-                    }
+                        openDocumentLauncher.launch(arrayOf("*/*"))
+                    },
+                    showDrawer = showDrawer,
+                    onShowDrawerChange = { showDrawer = it }
                 )
 
                 // Animated views based on tab choice
@@ -1154,12 +1185,235 @@ fun FinanceApp(viewModel: FinanceViewModel) {
 // HEADER VIEW
 // ============================================================================
 
+fun getCertificateFingerprint(context: Context, type: String): String {
+    try {
+        val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            context.packageManager.getPackageInfo(
+                context.packageName,
+                PackageManager.GET_SIGNING_CERTIFICATES
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(
+                context.packageName,
+                PackageManager.GET_SIGNATURES
+            )
+        }
+        
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            packageInfo.signingInfo?.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.signatures
+        }
+        
+        if (signatures != null && signatures.isNotEmpty()) {
+            val signature = signatures[0]
+            val md = MessageDigest.getInstance(type)
+            val digest = md.digest(signature.toByteArray())
+            return digest.joinToString(":") { String.format("%02X", it) }
+        }
+    } catch (e: Exception) {
+        return e.localizedMessage ?: "Error"
+    }
+    return "Not Found"
+}
+
 @Composable
-fun AppHeader(onBackupClick: () -> Unit, onRestoreClick: () -> Unit) {
+fun CredentialRow(label: String, value: String, context: Context) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF475569)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = value,
+                fontSize = 10.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                color = Color(0xFF0F172A),
+                modifier = Modifier.weight(1f),
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis
+            )
+            IconButton(
+                onClick = {
+                    val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clipData = android.content.ClipData.newPlainText(label, value)
+                    clipboardManager.setPrimaryClip(clipData)
+                    Toast.makeText(context, "$label কপি করা হয়েছে! 📋", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "Copy",
+                    tint = Color(0xFF1976D2),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AppHeader(
+    viewModel: FinanceViewModel,
+    currentAccountName: String,
+    onAccountChange: (String) -> Unit,
+    onBackupClick: () -> Unit,
+    onRestoreClick: () -> Unit,
+    showDrawer: Boolean,
+    onShowDrawerChange: (Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val currentUser = viewModel.currentUserState
+    var showAuthDialog by remember { mutableStateOf(false) }
+    var showCredentials by remember { mutableStateOf(false) }
+
+    // Google Sign-In setup
+    val gso = remember {
+        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken("989102272624-n5gu65hmac1t1r9fh4f9bd4cubp7uuvp.apps.googleusercontent.com")
+            .requestEmail()
+            .build()
+    }
+    val googleSignInClient = remember { GoogleSignIn.getClient(context, gso) }
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+            if (account != null) {
+                val credential = GoogleAuthProvider.getCredential(account.idToken, null)
+                FirebaseAuth.getInstance().signInWithCredential(credential)
+                    .addOnCompleteListener { authResultTask ->
+                        if (authResultTask.isSuccessful) {
+                            Toast.makeText(context, "গুগল সাইন-ইন সফল হয়েছে! 🎉", Toast.LENGTH_SHORT).show()
+                            showAuthDialog = false
+                        } else {
+                            Toast.makeText(context, "সাইন-ইন ব্যর্থ হয়েছে: ${authResultTask.exception?.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "ভুল হয়েছে: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    if (showAuthDialog) {
+        AlertDialog(
+            onDismissRequest = { showAuthDialog = false },
+            title = {
+                Text(
+                    text = "প্রোফাইল ও অ্যাপ তথ্য ℹ️",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F172A)
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Profile picture
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(if (currentUser != null) Color(0xFF2E7D32) else Color(0xFF64748B)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val photoUrl = currentUser?.photoUrl?.toString()
+                        if (photoUrl != null) {
+                            Image(
+                                painter = rememberAsyncImagePainter(photoUrl),
+                                contentDescription = "Profile Picture",
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            val initial = currentUser?.displayName?.firstOrNull()?.uppercase() ?: "G"
+                            Text(
+                                text = initial,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 28.sp
+                            )
+                        }
+                    }
+
+                    // Profile Name
+                    Text(
+                        text = currentUser?.displayName ?: "অতিথি ইউজার (লগইন করা নেই)",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+
+                    Divider(color = Color(0xFFE2E8F0), thickness = 1.dp)
+
+                    // App Information Text
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "অ্যাপ সম্পর্কে তথ্য 📱",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF1E293B)
+                        )
+                        Text(
+                            text = "Meneger2.0 হলো একটি আধুনিক অল-ইন-ওয়ান ফাইন্যান্স ট্র্যাকার এবং ডায়েরি অ্যাপ। এটি আপনাকে আপনার দৈনিক আয়-ব্যয় হিসাব করতে, দেনা-পাওনা (Debts & Credits) ট্র্যাক করতে এবং গুরুত্বপূর্ণ নোটসমূহ লিখে রাখতে সাহায্য করে।",
+                            fontSize = 12.sp,
+                            color = Color(0xFF475569),
+                            lineHeight = 18.sp
+                        )
+                        Text(
+                            text = "প্রধান ফিচারসমূহ ✨:\n" +
+                                    "• একাধিক একাউন্ট পরিবর্তন সুবিধা (পার্সোনাল, বিজনেস, ফ্যামিলি)\n" +
+                                    "• ক্লাউড ও অটোমেটিক ডেটা সিঙ্ক সুবিধা\n" +
+                                    "• সহজ দেনা-পাওনা লেজার বুক\n" +
+                                    "• বিস্তারিত ইনকাম এবং এক্সপেন্স ট্র্যাকার\n" +
+                                    "• ডায়েরি/নোটবুক ব্যবহারের চমৎকার অভিজ্ঞতা",
+                            fontSize = 11.sp,
+                            color = Color(0xFF475569),
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showAuthDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("ঠিক আছে", color = Color.White, fontSize = 12.sp)
+                }
+            },
+            containerColor = Color.White,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+        shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
         Row(
@@ -1169,79 +1423,355 @@ fun AppHeader(onBackupClick: () -> Unit, onRestoreClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column {
-                Text(
-                    text = "Finance Manager 💰",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF0F172A)
-                )
-                Text(
-                    text = "All-in-One Personal Dashboard",
-                    fontSize = 10.sp,
-                    color = Color(0xFF64748B),
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.clickable { showAuthDialog = true }
             ) {
-                // Backup Button
-                Card(
+                // Circle Profile Pic or H in circle
+                Box(
                     modifier = Modifier
-                        .clickable { onBackupClick() }
-                        .testTag("backup_header_button"),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1976D2).copy(alpha = 0.12f)),
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(0.5.dp, Color(0xFF1976D2).copy(alpha = 0.4f))
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (currentUser != null) Color(0xFF2E7D32) else Color(0xFF1976D2)
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Backup,
-                            contentDescription = "Backup",
-                            tint = Color(0xFF1976D2),
-                            modifier = Modifier.size(11.dp)
-                        )
+                    if (currentUser != null) {
+                        val photoUrl = currentUser.photoUrl?.toString()
+                        if (photoUrl != null) {
+                            Image(
+                                painter = rememberAsyncImagePainter(photoUrl),
+                                contentDescription = "Profile Picture",
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            val initial = currentUser.displayName?.firstOrNull()?.uppercase() ?: "H"
+                            Text(
+                                text = initial,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                        }
+                    } else {
                         Text(
-                            text = "Backup",
-                            color = Color(0xFF1976D2),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "H",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
                         )
                     }
                 }
 
-                // Restore Button
-                Card(
-                    modifier = Modifier
-                        .clickable { onRestoreClick() }
-                        .testTag("restore_header_button"),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.12f)),
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(0.5.dp, Color(0xFF2E7D32).copy(alpha = 0.4f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Restore,
-                            contentDescription = "Restore",
-                            tint = Color(0xFF2E7D32),
-                            modifier = Modifier.size(11.dp)
-                        )
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "Restore",
-                            color = Color(0xFF2E7D32),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "Meneger2.0 💰",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F172A)
                         )
+                    }
+                    Text(
+                        text = if (currentUser != null) (currentUser.displayName ?: "") else "All-in-One Personal Dashboard",
+                        fontSize = 9.sp,
+                        color = Color(0xFF64748B)
+                    )
+                }
+            }
+
+            IconButton(
+                onClick = { onShowDrawerChange(true) }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Menu,
+                    contentDescription = "Menu Options",
+                    tint = Color(0xFF0F172A),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+
+    if (showDrawer) {
+        Dialog(
+            onDismissRequest = { onShowDrawerChange(false) },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            var drawerDragX by remember { mutableStateOf(0f) }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable { onShowDrawerChange(false) }
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { drawerDragX = 0f },
+                            onDragEnd = {
+                                if (drawerDragX > 100f) {
+                                    onShowDrawerChange(false)
+                                }
+                            },
+                            onDragCancel = { drawerDragX = 0f },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                drawerDragX += dragAmount
+                                if (drawerDragX > 100f) {
+                                    onShowDrawerChange(false)
+                                }
+                            }
+                        )
+                    }
+            ) {
+                var animatedState by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    animatedState = true
+                }
+
+                AnimatedVisibility(
+                    visible = animatedState,
+                    enter = slideInHorizontally(
+                        initialOffsetX = { it }
+                    ),
+                    exit = slideOutHorizontally(
+                        targetOffsetX = { it }
+                    ),
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(300.dp)
+                        .align(Alignment.CenterEnd)
+                        .clickable(enabled = false) { }
+                        .pointerInput(Unit) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { drawerDragX = 0f },
+                                onDragEnd = {
+                                    if (drawerDragX > 100f) {
+                                        onShowDrawerChange(false)
+                                    }
+                                },
+                                onDragCancel = { drawerDragX = 0f },
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    drawerDragX += dragAmount
+                                    if (drawerDragX > 100f) {
+                                        onShowDrawerChange(false)
+                                    }
+                                }
+                            )
+                        }
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = Color.White,
+                        tonalElevation = 8.dp
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .statusBarsPadding()
+                                .navigationBarsPadding()
+                                .padding(16.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Meneger2.0 অপশনসমূহ ⚙️",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF0F172A)
+                                    )
+                                    IconButton(onClick = { onShowDrawerChange(false) }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Close Drawer",
+                                            tint = Color(0xFF64748B)
+                                        )
+                                    }
+                                }
+
+                                Divider(color = Color(0xFFE2E8F0), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                                Text(
+                                    text = "ডাটা ব্যাকআপ ও রিস্টোর 🔄",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF1E293B),
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            onShowDrawerChange(false)
+                                            onBackupClick()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2).copy(alpha = 0.12f), contentColor = Color(0xFF1976D2)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, Color(0xFF1976D2).copy(alpha = 0.3f)),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Backup,
+                                                contentDescription = "Backup",
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text("ব্যাকআপ", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            onShowDrawerChange(false)
+                                            onRestoreClick()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.12f), contentColor = Color(0xFF2E7D32)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, Color(0xFF2E7D32).copy(alpha = 0.3f)),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Restore,
+                                                contentDescription = "Restore",
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text("রিস্টোর", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            onShowDrawerChange(false)
+                                            if (currentUser != null) {
+                                                viewModel.syncFromCloud(currentUser.uid)
+                                                Toast.makeText(context, "ক্লাউড থেকে ডাটা সিঙ্ক হচ্ছে... 🔄", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                Toast.makeText(context, "সিঙ্ক করতে দয়া করে প্রথমে গুগল দিয়ে লগইন করুন।", Toast.LENGTH_LONG).show()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800).copy(alpha = 0.12f), contentColor = Color(0xFFE65100)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, Color(0xFFFF9800).copy(alpha = 0.3f)),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Sync,
+                                                contentDescription = "Sync",
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text("Sync", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+
+                                Divider(color = Color(0xFFE2E8F0), thickness = 1.dp, modifier = Modifier.padding(vertical = 16.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "অ্যাপ ক্রেডেনশিয়ালস 🔑",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                    TextButton(
+                                        onClick = { showCredentials = !showCredentials },
+                                        contentPadding = PaddingValues(0.dp)
+                                    ) {
+                                        Text(
+                                            text = if (showCredentials) "লুকান 🔼" else "দেখুন 🔽",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF1976D2)
+                                        )
+                                    }
+                                }
+
+                                if (showCredentials) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0xFFF1F5F9), RoundedCornerShape(8.dp))
+                                            .padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        val packageName = context.packageName
+                                        val sha1 = remember { getCertificateFingerprint(context, "SHA-1") }
+                                        val sha256 = remember { getCertificateFingerprint(context, "SHA-256") }
+
+                                        CredentialRow(label = "Package Name", value = packageName, context = context)
+                                        Divider(color = Color(0xFFE2E8F0), thickness = 0.5.dp)
+                                        CredentialRow(label = "SHA-1 Fingerprint", value = sha1, context = context)
+                                        Divider(color = Color(0xFFE2E8F0), thickness = 0.5.dp)
+                                        CredentialRow(label = "SHA-256 Fingerprint", value = sha256, context = context)
+                                    }
+                                }
+                            }
+
+                            // Bottom Login / Logout Button - pinned to bottom, strictly NO emojis or icons
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = {
+                                    onShowDrawerChange(false)
+                                    if (currentUser != null) {
+                                        viewModel.logoutAndClearLocal {
+                                            googleSignInClient.signOut().addOnCompleteListener {
+                                                Toast.makeText(context, "লগআউট করা হয়েছে এবং লোকাল ডাটা ক্লিয়ার করা হয়েছে।", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    } else {
+                                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (currentUser != null) Color(0xFFC62828) else Color(0xFF1976D2)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(vertical = 12.dp)
+                            ) {
+                                Text(
+                                    text = if (currentUser != null) "লগআউট করুন" else "গুগল দিয়ে লগইন",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1447,7 +1977,7 @@ fun DuesLedgerSessionView(
 
         // 3. INDIVIDUAL DUES LIST
         Text(
-            text = "📋 People Dues List (" + convertToBengaliNumber(persons.size.toString()) + ")",
+            text = "📋 People Dues List",
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF0F172A),
@@ -1821,16 +2351,16 @@ fun DuesLedgerSessionView(
                     OutlinedTextField(
                         value = viewModel.newPersonNameInput,
                         onValueChange = { viewModel.newPersonNameInput = it },
-                        placeholder = { Text("Enter name...", fontSize = 14.sp) },
+                        placeholder = { Text("Enter name...", fontSize = 16.sp) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF2E7D32),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1890,31 +2420,31 @@ fun DuesLedgerSessionView(
                     OutlinedTextField(
                         value = quickAmountInput,
                         onValueChange = { quickAmountInput = it },
-                        placeholder = { Text("Amount ৳", fontSize = 14.sp) },
+                        placeholder = { Text("Amount ৳", fontSize = 16.sp) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
                     OutlinedTextField(
                         value = quickCategoryInput,
                         onValueChange = { quickCategoryInput = it },
-                        placeholder = { Text("Description (e.g. loan, payment)", fontSize = 14.sp) },
+                        placeholder = { Text("Description (e.g. loan, payment)", fontSize = 16.sp) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
 
                     Row(
@@ -2013,17 +2543,17 @@ fun DuesLedgerSessionView(
                     OutlinedTextField(
                         value = repaymentAmountInput,
                         onValueChange = { repaymentAmountInput = it },
-                        placeholder = { Text("Amount ৳", fontSize = 14.sp) },
+                        placeholder = { Text("Amount ৳", fontSize = 16.sp) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF2E7D32),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2144,14 +2674,14 @@ fun DuesLedgerSessionView(
                             onValueChange = { categoryInput = it },
                             label = { Text("Description", fontSize = 11.sp) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color(0xFF0F172A),
                                 unfocusedTextColor = Color(0xFF0F172A),
                                 focusedBorderColor = Color(0xFF1976D2),
                                 unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                         )
 
                         OutlinedTextField(
@@ -2160,14 +2690,14 @@ fun DuesLedgerSessionView(
                             label = { Text("Main Amount ৳", fontSize = 11.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color(0xFF0F172A),
                                 unfocusedTextColor = Color(0xFF0F172A),
                                 focusedBorderColor = Color(0xFF1976D2),
                                 unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                         )
 
                         val calendar = Calendar.getInstance()
@@ -2216,15 +2746,15 @@ fun DuesLedgerSessionView(
                                 onValueChange = { },
                                 readOnly = true,
                                 enabled = false,
-                                label = { Text("Date (YYYY-MM-DD HH:MM)", fontSize = 11.sp) },
+                                label = { Text("Date (YYYY-MM-DD HH:MM)", fontSize = 12.sp) },
                                 singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
                                 colors = OutlinedTextFieldDefaults.colors(
                                     disabledTextColor = Color(0xFF0F172A),
                                     disabledBorderColor = Color(0xFFCBD5E1),
                                     disabledPlaceholderColor = Color(0xFF64748B)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                             )
                         }
 
@@ -2602,10 +3132,27 @@ fun TrackerSessionView(
 
         // 0. Dynamic visual summary card for the active filtered set - AT THE VERY TOP
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(
+                    elevation = 8.dp,
+                    shape = RoundedCornerShape(16.dp),
+                    clip = false,
+                    ambientColor = Color(0xFF1E293B).copy(alpha = 0.08f),
+                    spotColor = Color(0xFF1E293B).copy(alpha = 0.12f)
+                ),
+            shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-            border = BorderStroke(1.dp, Color(0xFFCBD5E1))
+            border = BorderStroke(
+                width = 1.2.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF34D399).copy(alpha = 0.5f), // Soft Emerald
+                        Color(0xFF60A5FA).copy(alpha = 0.5f), // Soft Blue
+                        Color(0xFFC084FC).copy(alpha = 0.5f)  // Soft Purple
+                    )
+                )
+            )
         ) {
             Column(
                 modifier = Modifier
@@ -2613,12 +3160,13 @@ fun TrackerSessionView(
                     .background(
                         brush = Brush.linearGradient(
                             colors = listOf(
-                                Color(0xFFEFF6FF), // Soft elegant blue
-                                Color(0xFFF5F3FF)  // Soft elegant purple
+                                Color(0xFFF0FDF4), // Emerald tint
+                                Color(0xFFEFF6FF), // Blue tint
+                                Color(0xFFFAF5FF)  // Purple tint
                             )
                         )
                     )
-                    .padding(14.dp)
+                    .padding(horizontal = 14.dp, vertical = 4.dp)
             ) {
                 if (isMonthFiltered) {
                     Text(
@@ -2626,7 +3174,7 @@ fun TrackerSessionView(
                         fontSize = 11.sp,
                         color = Color(0xFF2E7D32),
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        modifier = Modifier.padding(bottom = 0.dp)
                     )
                 }
                 Row(
@@ -2667,13 +3215,13 @@ fun TrackerSessionView(
                             .background(Color(0xFFE2E8F0))
                     )
                     Column(horizontalAlignment = Alignment.End, modifier = Modifier.weight(1.2f)) {
-                        Text("Balance", fontSize = 9.sp, color = Color(0xFF64748B))
+                        Text("Balance", fontSize = 11.sp, color = Color(0xFF64748B), fontWeight = FontWeight.Bold)
                         Text(
                             text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.0f", filteredBalance))}",
-                            fontSize = 14.sp,
+                            fontSize = 28.sp,
                             fontWeight = FontWeight.Black,
-                            color = if (filteredBalance >= 0.0) Color(0xFF2E7D32) else Color(0xFFC62828),
-                            modifier = Modifier.padding(top = 1.dp)
+                            color = Color(0xFF1976D2),
+                            modifier = Modifier.padding(top = 2.dp)
                         )
                     }
                 }
@@ -2791,7 +3339,7 @@ fun TrackerSessionView(
                             OutlinedTextField(
                                 value = viewModel.categoryInput,
                                 onValueChange = { viewModel.categoryInput = it },
-                                placeholder = { Text("Category (e.g. food)", fontSize = 14.sp, maxLines = 1, softWrap = false) },
+                                placeholder = { Text("Category (e.g. food)", fontSize = 16.sp, maxLines = 1, softWrap = false) },
                                 singleLine = true,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedTextColor = Color(0xFF0F172A),
@@ -2799,14 +3347,14 @@ fun TrackerSessionView(
                                     focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                     unfocusedBorderColor = Color(0xFFCBD5E1)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
-                                modifier = Modifier.weight(1.2f).height(56.dp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+                                modifier = Modifier.weight(1.2f).height(48.dp)
                             )
 
                             OutlinedTextField(
                                 value = viewModel.amountInput,
                                 onValueChange = { viewModel.amountInput = it },
-                                placeholder = { Text("Amount (৳)", fontSize = 14.sp, maxLines = 1, softWrap = false) },
+                                placeholder = { Text("Amount (৳)", fontSize = 16.sp, maxLines = 1, softWrap = false) },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true,
                                 colors = OutlinedTextFieldDefaults.colors(
@@ -2815,8 +3363,8 @@ fun TrackerSessionView(
                                     focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                     unfocusedBorderColor = Color(0xFFCBD5E1)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
-                                modifier = Modifier.weight(1f).height(56.dp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+                                modifier = Modifier.weight(1f).height(48.dp)
                             )
                         }
 
@@ -2831,7 +3379,7 @@ fun TrackerSessionView(
                                 onValueChange = { },
                                 readOnly = true,
                                 enabled = false,
-                                placeholder = { Text("Date & Time", fontSize = 14.sp, maxLines = 1, softWrap = false) },
+                                placeholder = { Text("Date & Time", fontSize = 16.sp, maxLines = 1, softWrap = false) },
                                 trailingIcon = {
                                     IconButton(onClick = { datePickerDialog.show() }) {
                                         Text("🕒", fontSize = 13.sp)
@@ -2842,8 +3390,8 @@ fun TrackerSessionView(
                                     disabledBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                     disabledPlaceholderColor = Color(0xFF64748B)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
-                                modifier = Modifier.fillMaxWidth().height(56.dp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+                                modifier = Modifier.fillMaxWidth().height(48.dp)
                             )
                         }
 
@@ -2851,7 +3399,7 @@ fun TrackerSessionView(
                         OutlinedTextField(
                             value = viewModel.noteInput,
                             onValueChange = { viewModel.noteInput = it },
-                            placeholder = { Text("Enter details (optional)...", fontSize = 14.sp) },
+                            placeholder = { Text("Enter details (optional)...", fontSize = 16.sp) },
                             singleLine = false,
                             minLines = 2,
                             maxLines = 2,
@@ -2861,8 +3409,8 @@ fun TrackerSessionView(
                                 focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                 unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
-                            modifier = Modifier.fillMaxWidth()
+                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+                            modifier = Modifier.fillMaxWidth().height(72.dp)
                         )
                     }
                 },
@@ -3174,33 +3722,110 @@ fun TrackerSessionView(
                     }
                 }
 
-                // Smooth animated visibility for category search field
+                // Smooth animated visibility for category search field and summary list
                 AnimatedVisibility(
                     visible = isSearchVisible,
                     enter = expandVertically() + fadeIn(),
                     exit = shrinkVertically() + fadeOut()
                 ) {
-                    OutlinedTextField(
-                        value = viewModel.filterCategoryQuery,
-                        onValueChange = { viewModel.filterCategoryQuery = it },
-                        placeholder = { Text("e.g. food", fontSize = 14.sp) },
-                        trailingIcon = { Text("🔍", modifier = Modifier.padding(end = 8.dp), fontSize = 14.sp) },
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color(0xFF0F172A),
-                            unfocusedTextColor = Color(0xFF0F172A),
-                            focusedBorderColor = Color(0xFF1976D2),
-                            unfocusedBorderColor = Color(0xFFCBD5E1)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = viewModel.filterCategoryQuery,
+                            onValueChange = { viewModel.filterCategoryQuery = it },
+                            placeholder = { Text("e.g. food", fontSize = 14.sp) },
+                            trailingIcon = { Text("🔍", modifier = Modifier.padding(end = 8.dp), fontSize = 14.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color(0xFF0F172A),
+                                unfocusedTextColor = Color(0xFF0F172A),
+                                focusedBorderColor = Color(0xFF1976D2),
+                                unfocusedBorderColor = Color(0xFFCBD5E1)
+                            )
                         )
-                    )
+
+                        // Calculate Expense Category Totals from dateFilteredTxList
+                        val expenseCategoryTotals = remember(dateFilteredTxList, viewModel.filterCategoryQuery) {
+                            dateFilteredTxList
+                                .filter { it.type == "EXPENSE" }
+                                .groupBy { it.category.trim() }
+                                .mapValues { entry -> entry.value.sumOf { it.amount } }
+                                .filter { (cat, _) ->
+                                    viewModel.filterCategoryQuery.trim().isEmpty() || cat.contains(viewModel.filterCategoryQuery, ignoreCase = true)
+                                }
+                                .toList()
+                                .sortedByDescending { it.second }
+                        }
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                            border = BorderStroke(0.5.dp, Color(0xFFE2E8F0)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "📂 Category Expense Summary:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF475569)
+                                )
+
+                                if (expenseCategoryTotals.isEmpty()) {
+                                    Text(
+                                        text = "No matching expense categories found.",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF64748B),
+                                        modifier = Modifier.padding(vertical = 4.dp)
+                                    )
+                                } else {
+                                    expenseCategoryTotals.forEach { (category, total) ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(Color.White, shape = RoundedCornerShape(6.dp))
+                                                .border(BorderStroke(0.5.dp, Color(0xFFE2E8F0)), shape = RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text("📁", fontSize = 11.sp)
+                                                Text(
+                                                    text = if (category.isEmpty()) "Uncategorized" else category,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = Color(0xFF0F172A)
+                                                )
+                                            }
+                                            Text(
+                                                text = "৳ ${String.format(Locale.US, "%,.2f", total)}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFC62828)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
         // 3. Transactions Record Card List
         Text(
-            text = "📋 Records List (" + filteredTxList.size.toString() + " found)",
+            text = "📋 Records List",
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF0F172A),
@@ -3242,51 +3867,87 @@ fun TrackerSessionView(
         } else {
             val itemsToShow = if (viewModel.showAllTransactions) filteredTxList else filteredTxList.take(5)
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                itemsToShow.forEach { tx ->
-                    val isPersonal = tx.personName.isNotEmpty() &&
-                            !tx.personName.trim().equals("সাধারণ", ignoreCase = true) &&
-                            !tx.personName.trim().equals("general", ignoreCase = true)
-                    TransactionItemRow(
-                        transaction = tx,
-                        onEdit = {
-                            if (isPersonal) {
-                                Toast.makeText(context, "Please edit/delete dues, debts, and repayments in the Debts/Credits tab.", Toast.LENGTH_SHORT).show()
-                            } else {
-                                viewModel.startEditingTransaction(tx)
-                            }
-                        },
-                        onDelete = {
-                            if (isPersonal) {
-                                Toast.makeText(context, "Please edit/delete dues, debts, and repayments in the Debts/Credits tab.", Toast.LENGTH_SHORT).show()
-                            } else {
-                                viewModel.confirmDelete(
-                                    title = "Delete Transaction",
-                                    message = "Are you sure you want to delete this transaction?",
-                                    action = {
-                                        viewModel.deleteTransactionWithUndo(tx, showSnackbarWithUndo)
-                                    }
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+            ) {
+                Column {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            itemsToShow.forEach { tx ->
+                                val isPersonal = tx.personName.isNotEmpty() &&
+                                        !tx.personName.trim().equals("সাধারণ", ignoreCase = true) &&
+                                        !tx.personName.trim().equals("general", ignoreCase = true)
+                                TransactionItemRow(
+                                    transaction = tx,
+                                    onEdit = {
+                                        if (isPersonal) {
+                                            Toast.makeText(context, "Please edit/delete dues, debts, and repayments in the Debts/Credits tab.", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            viewModel.startEditingTransaction(tx)
+                                        }
+                                    },
+                                    onDelete = {
+                                        if (isPersonal) {
+                                            Toast.makeText(context, "Please edit/delete dues, debts, and repayments in the Debts/Credits tab.", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            viewModel.confirmDelete(
+                                                title = "Delete Transaction",
+                                                message = "Are you sure you want to delete this transaction?",
+                                                action = {
+                                                    viewModel.deleteTransactionWithUndo(tx, showSnackbarWithUndo)
+                                                }
+                                            )
+                                        }
+                                    },
+                                    onDoubleClick = { viewModel.selectedTransactionForDetails = tx }
                                 )
                             }
-                        },
-                        onDoubleClick = { viewModel.selectedTransactionForDetails = tx }
-                    )
-                }
+                        }
 
-                if (filteredTxList.size > 5) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Button(
-                        onClick = { viewModel.showAllTransactions = !viewModel.showAllTransactions },
-                        modifier = Modifier.fillMaxWidth().height(36.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(
-                            text = if (viewModel.showAllTransactions) "Show Less 🔼" else "Show All 🔽",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        // Bottom fade overlay to indicate there are more items tucked downwards
+                        if (!viewModel.showAllTransactions && filteredTxList.size > 5) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.BottomCenter)
+                                    .height(40.dp)
+                                    .background(
+                                        brush = Brush.verticalGradient(
+                                            colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.95f))
+                                        )
+                                    )
+                            )
+                        }
+                    }
+
+                    if (filteredTxList.size > 5) {
+                        Divider(color = Color(0xFFE2E8F0), thickness = 1.dp)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.showAllTransactions = !viewModel.showAllTransactions }
+                                .background(Color(0xFFF8FAFC))
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (viewModel.showAllTransactions) "Show Less 🔼" else "Show All 🔽",
+                                    color = Color(0xFF1976D2),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -3306,7 +3967,7 @@ fun TrackerSessionView(
         ) {
             Column(modifier = Modifier.padding(8.dp)) {
                 Text(
-                    text = "📅 Daily Summary (" + activeDailySummaries.size.toString() + " days)",
+                    text = "📅 Daily Summary",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF0F172A)
@@ -3484,7 +4145,7 @@ fun TransactionItemRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "${if (isIncome) "+" else ""} ৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", transaction.amount)),
+                        text = "৳" + convertToBengaliNumber(String.format(Locale.US, "%,.0f", transaction.amount)),
                         color = if (isIncome) Color(0xFF2E7D32) else Color(0xFFC62828),
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Black
@@ -3571,8 +4232,8 @@ fun NoticeSessionView(
                     OutlinedTextField(
                         value = viewModel.noticeTitleInput,
                         onValueChange = { viewModel.noticeTitleInput = it },
-                        placeholder = { Text("Header", fontSize = 14.sp) },
-                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Header", fontSize = 16.sp) },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
@@ -3580,7 +4241,7 @@ fun NoticeSessionView(
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
 
                     // Content input field
@@ -3590,15 +4251,15 @@ fun NoticeSessionView(
                             noticeContentInputState = it 
                             viewModel.noticeContentInput = it.text
                         },
-                        placeholder = { Text("Details", fontSize = 14.sp) },
-                        modifier = Modifier.fillMaxWidth().height(150.dp),
+                        placeholder = { Text("Details", fontSize = 16.sp) },
+                        modifier = Modifier.fillMaxWidth().height(120.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
                     )
 
                     // Checkbox helper row
@@ -3664,7 +4325,7 @@ fun NoticeSessionView(
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
-            text = "📋 Saved Notes (" + notices.size.toString() + ")",
+            text = "📋 Saved Notes",
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFF0F172A),
@@ -3803,12 +4464,12 @@ fun StickyNoteCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(text = "📓", fontSize = 14.sp)
+                    Text(text = "📓", fontSize = 18.sp)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = displayTitle,
                         color = Color(0xFF0F172A),
-                        fontSize = 14.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = if (isExpanded) Int.MAX_VALUE else 1,
                         overflow = TextOverflow.Ellipsis
@@ -3881,7 +4542,7 @@ fun StickyNoteCard(
                                     Text(
                                         text = text,
                                         color = if (isChecked) Color(0xFF94A3B8) else Color(0xFF334155),
-                                        fontSize = 14.sp,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.Medium,
                                         textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
                                     )
@@ -3891,8 +4552,8 @@ fun StickyNoteCard(
                                     Text(
                                         text = line,
                                         color = Color(0xFF334155),
-                                        fontSize = 14.sp,
-                                        lineHeight = 19.sp,
+                                        fontSize = 16.sp,
+                                        lineHeight = 22.sp,
                                         fontWeight = FontWeight.Medium,
                                         modifier = Modifier.padding(vertical = 2.dp)
                                     )
@@ -3904,8 +4565,8 @@ fun StickyNoteCard(
                     Text(
                         text = parsedContent,
                         color = Color(0xFF334155),
-                        fontSize = 14.sp,
-                        lineHeight = 19.sp,
+                        fontSize = 16.sp,
+                        lineHeight = 22.sp,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -4082,19 +4743,28 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
     NavigationBar(
         containerColor = Color.White,
         tonalElevation = 8.dp,
-        modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+        modifier = Modifier
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+            .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
     ) {
         NavigationBarItem(
             selected = activeTab == "ACCOUNT",
             onClick = { onTabSelected("ACCOUNT") },
             icon = { Text("👥", fontSize = 18.sp) },
             label = { Text("Debts/Credits", fontSize = 10.sp) },
+            modifier = Modifier
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .background(
+                    color = if (activeTab == "ACCOUNT") Color(0xFF2E7D32).copy(alpha = 0.12f) else Color(0xFFF1F5F9),
+                    shape = RoundedCornerShape(12.dp)
+                ),
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = Color(0xFF2E7D32),
                 unselectedIconColor = Color(0xFF64748B),
                 selectedTextColor = Color(0xFF2E7D32),
                 unselectedTextColor = Color(0xFF64748B),
-                indicatorColor = Color(0xFF2E7D32).copy(alpha = 0.12f)
+                indicatorColor = Color.Transparent
             )
         )
 
@@ -4103,12 +4773,18 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
             onClick = { onTabSelected("TRACKER") },
             icon = { Text("💸", fontSize = 18.sp) },
             label = { Text("Tracker", fontSize = 10.sp) },
+            modifier = Modifier
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .background(
+                    color = if (activeTab == "TRACKER") Color(0xFF1976D2).copy(alpha = 0.12f) else Color(0xFFF1F5F9),
+                    shape = RoundedCornerShape(12.dp)
+                ),
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF2E7D32),
+                selectedIconColor = Color(0xFF1976D2),
                 unselectedIconColor = Color(0xFF64748B),
-                selectedTextColor = Color(0xFF2E7D32),
+                selectedTextColor = Color(0xFF1976D2),
                 unselectedTextColor = Color(0xFF64748B),
-                indicatorColor = Color(0xFF2E7D32).copy(alpha = 0.12f)
+                indicatorColor = Color.Transparent
             )
         )
 
@@ -4117,12 +4793,18 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
             onClick = { onTabSelected("NOTICE") },
             icon = { Text("📓", fontSize = 18.sp) },
             label = { Text("Notebook", fontSize = 10.sp) },
+            modifier = Modifier
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .background(
+                    color = if (activeTab == "NOTICE") Color(0xFF3498DB).copy(alpha = 0.12f) else Color(0xFFF1F5F9),
+                    shape = RoundedCornerShape(12.dp)
+                ),
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF2E7D32),
+                selectedIconColor = Color(0xFF3498DB),
                 unselectedIconColor = Color(0xFF64748B),
-                selectedTextColor = Color(0xFF2E7D32),
+                selectedTextColor = Color(0xFF3498DB),
                 unselectedTextColor = Color(0xFF64748B),
-                indicatorColor = Color(0xFF2E7D32).copy(alpha = 0.12f)
+                indicatorColor = Color.Transparent
             )
         )
     }
