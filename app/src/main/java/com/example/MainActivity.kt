@@ -3244,7 +3244,7 @@ fun TrackerSessionView(
                         Text("Balance", fontSize = 11.sp, color = Color(0xFF64748B), fontWeight = FontWeight.Bold)
                         Text(
                             text = "৳ ${convertToBengaliNumber(String.format(Locale.US, "%,.0f", filteredBalance))}",
-                            fontSize = 28.sp,
+                            fontSize = 22.sp,
                             fontWeight = FontWeight.Black,
                             color = Color(0xFF1976D2),
                             modifier = Modifier.padding(top = 2.dp)
@@ -4778,15 +4778,15 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
         NavigationBar(
             containerColor = Color.Transparent,
             tonalElevation = 0.dp,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().height(64.dp)
         ) {
         NavigationBarItem(
             selected = activeTab == "ACCOUNT",
             onClick = { onTabSelected("ACCOUNT") },
             icon = { Text("👥", fontSize = 18.sp) },
-            label = { Text("Debts/Credits", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+            label = { Text("Account", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold) },
             modifier = Modifier
-                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .padding(horizontal = 6.dp, vertical = 2.dp)
                 .background(
                     color = if (activeTab == "ACCOUNT") Color.White.copy(alpha = 0.15f) else Color.Transparent,
                     shape = RoundedCornerShape(12.dp)
@@ -4804,9 +4804,9 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
             selected = activeTab == "TRACKER",
             onClick = { onTabSelected("TRACKER") },
             icon = { Text("💸", fontSize = 18.sp) },
-            label = { Text("Tracker", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+            label = { Text("Tracker", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold) },
             modifier = Modifier
-                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .padding(horizontal = 6.dp, vertical = 2.dp)
                 .background(
                     color = if (activeTab == "TRACKER") Color.White.copy(alpha = 0.15f) else Color.Transparent,
                     shape = RoundedCornerShape(12.dp)
@@ -4824,9 +4824,9 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
             selected = activeTab == "NOTICE",
             onClick = { onTabSelected("NOTICE") },
             icon = { Text("📓", fontSize = 18.sp) },
-            label = { Text("Notebook", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+            label = { Text("Notebook", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold) },
             modifier = Modifier
-                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .padding(horizontal = 6.dp, vertical = 2.dp)
                 .background(
                     color = if (activeTab == "NOTICE") Color.White.copy(alpha = 0.15f) else Color.Transparent,
                     shape = RoundedCornerShape(12.dp)
