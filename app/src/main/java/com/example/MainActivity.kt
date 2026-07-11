@@ -216,16 +216,40 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
     var currentUserState by mutableStateOf<FirebaseUser?>(FirebaseAuth.getInstance().currentUser)
     var isSyncingFromCloud by mutableStateOf(false)
     var isConnectingToCloud by mutableStateOf(false)
+    val isLocalDataLoadedState = MutableStateFlow(false)
 
     init {
+        // Wait for first emission from database before enabling auto-upload to cloud, and auto-restore if empty
+        viewModelScope.launch {
+            try {
+                transactions.first()
+                persons.first()
+                notices.first()
+                profile.first()
+                
+                val user = FirebaseAuth.getInstance().currentUser
+                if (user != null) {
+                    val localTxs = transactions.value
+                    val localPersons = persons.value
+                    val localNotices = notices.value
+                    if (localTxs.isEmpty() && localPersons.isEmpty() && localNotices.isEmpty()) {
+                        syncFromCloud(user.uid)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isLocalDataLoadedState.value = true
+            }
+        }
+
         // Observe local database changes and upload to cloud if signed in
         viewModelScope.launch {
-            kotlinx.coroutines.flow.combine(transactions, persons, notices, profile) { t, p, n, pr ->
-                // Just trigger when any of them change
-                true
-            }.collect {
+            combine(transactions, persons, notices, profile, isLocalDataLoadedState) { _, _, _, _, loaded ->
+                loaded
+            }.collect { loaded ->
                 val user = FirebaseAuth.getInstance().currentUser
-                if (user != null && !isSyncingFromCloud) {
+                if (user != null && !isSyncingFromCloud && loaded) {
                     val json = generateBackupJsonString()
                     if (json.isNotEmpty()) {
                         val dbRef = FirebaseDatabase.getInstance("https://overtime-9a9a5-default-rtdb.asia-southeast1.firebasedatabase.app")
@@ -1108,8 +1132,7 @@ fun FinanceApp(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // Top App Header
@@ -1128,42 +1151,44 @@ fun FinanceApp(
                     onShowDrawerChange = { showDrawer = it }
                 )
 
-                // Animated views based on tab choice
-                AnimatedContent(
-                    targetState = viewModel.currentTab,
-                    transitionSpec = {
-                        fadeIn() togetherWith fadeOut()
-                    },
-                    label = "tabChange"
-                ) { targetTab ->
-                    when (targetTab) {
-                        "ACCOUNT" -> {
-                            val personsState by viewModel.persons.collectAsStateWithLifecycle()
-                            val filteredPersons = remember(personsState) {
-                                personsState.filter { !it.name.trim().equals("সাধারণ", ignoreCase = true) && !it.name.trim().equals("general", ignoreCase = true) && it.name.trim().isNotEmpty() }
+                // Animated views based on tab choice with horizontal padding
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    AnimatedContent(
+                        targetState = viewModel.currentTab,
+                        transitionSpec = {
+                            fadeIn() togetherWith fadeOut()
+                        },
+                        label = "tabChange"
+                    ) { targetTab ->
+                        when (targetTab) {
+                            "ACCOUNT" -> {
+                                val personsState by viewModel.persons.collectAsStateWithLifecycle()
+                                val filteredPersons = remember(personsState) {
+                                    personsState.filter { !it.name.trim().equals("সাধারণ", ignoreCase = true) && !it.name.trim().equals("general", ignoreCase = true) && it.name.trim().isNotEmpty() }
+                                }
+                                DuesLedgerSessionView(
+                                    viewModel = viewModel,
+                                    transactions = transactionsState,
+                                    persons = filteredPersons,
+                                    showSnackbarWithUndo = showSnackbarWithUndo
+                                )
                             }
-                            DuesLedgerSessionView(
-                                viewModel = viewModel,
-                                transactions = transactionsState,
-                                persons = filteredPersons,
-                                showSnackbarWithUndo = showSnackbarWithUndo
-                            )
-                        }
-                        "TRACKER" -> {
-                            TrackerSessionView(
-                                viewModel = viewModel,
-                                transactions = transactionsState,
-                                thisMonth = thisMonth,
-                                thisYear = thisYear,
-                                showSnackbarWithUndo = showSnackbarWithUndo
-                            )
-                        }
-                        "NOTICE" -> {
-                            NoticeSessionView(
-                                viewModel = viewModel,
-                                notices = noticesState,
-                                showSnackbarWithUndo = showSnackbarWithUndo
-                            )
+                            "TRACKER" -> {
+                                TrackerSessionView(
+                                    viewModel = viewModel,
+                                    transactions = transactionsState,
+                                    thisMonth = thisMonth,
+                                    thisYear = thisYear,
+                                    showSnackbarWithUndo = showSnackbarWithUndo
+                                )
+                            }
+                            "NOTICE" -> {
+                                NoticeSessionView(
+                                    viewModel = viewModel,
+                                    notices = noticesState,
+                                    showSnackbarWithUndo = showSnackbarWithUndo
+                                )
+                            }
                         }
                     }
                 }
@@ -1412,14 +1437,14 @@ fun AppHeader(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF2563EB)),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1434,8 +1459,9 @@ fun AppHeader(
                         .size(36.dp)
                         .clip(CircleShape)
                         .background(
-                            if (currentUser != null) Color(0xFF2E7D32) else Color(0xFF1976D2)
-                        ),
+                            if (currentUser != null) Color(0xFF2E7D32) else Color(0xFF2563EB)
+                        )
+                        .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     if (currentUser != null) {
@@ -1471,13 +1497,13 @@ fun AppHeader(
                             text = "Meneger2.0 💰",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF0F172A)
+                            color = Color.White
                         )
                     }
                     Text(
                         text = if (currentUser != null) (currentUser.displayName ?: "") else "All-in-One Personal Dashboard",
                         fontSize = 9.sp,
-                        color = Color(0xFF64748B)
+                        color = Color.White.copy(alpha = 0.7f)
                     )
                 }
             }
@@ -1488,7 +1514,7 @@ fun AppHeader(
                 Icon(
                     imageVector = Icons.Default.Menu,
                     contentDescription = "Menu Options",
-                    tint = Color(0xFF0F172A),
+                    tint = Color.White,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -2351,16 +2377,16 @@ fun DuesLedgerSessionView(
                     OutlinedTextField(
                         value = viewModel.newPersonNameInput,
                         onValueChange = { viewModel.newPersonNameInput = it },
-                        placeholder = { Text("Enter name...", fontSize = 16.sp) },
+                        placeholder = { Text("Enter name...", fontSize = 14.sp) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF2E7D32),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2420,31 +2446,31 @@ fun DuesLedgerSessionView(
                     OutlinedTextField(
                         value = quickAmountInput,
                         onValueChange = { quickAmountInput = it },
-                        placeholder = { Text("Amount ৳", fontSize = 16.sp) },
+                        placeholder = { Text("Amount ৳", fontSize = 14.sp) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
                     OutlinedTextField(
                         value = quickCategoryInput,
                         onValueChange = { quickCategoryInput = it },
-                        placeholder = { Text("Description (e.g. loan, payment)", fontSize = 16.sp) },
+                        placeholder = { Text("Description (e.g. loan, payment)", fontSize = 14.sp) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
 
                     Row(
@@ -2543,17 +2569,17 @@ fun DuesLedgerSessionView(
                     OutlinedTextField(
                         value = repaymentAmountInput,
                         onValueChange = { repaymentAmountInput = it },
-                        placeholder = { Text("Amount ৳", fontSize = 16.sp) },
+                        placeholder = { Text("Amount ৳", fontSize = 14.sp) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
                             unfocusedTextColor = Color(0xFF0F172A),
                             focusedBorderColor = Color(0xFF2E7D32),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2674,14 +2700,14 @@ fun DuesLedgerSessionView(
                             onValueChange = { categoryInput = it },
                             label = { Text("Description", fontSize = 11.sp) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color(0xFF0F172A),
                                 unfocusedTextColor = Color(0xFF0F172A),
                                 focusedBorderColor = Color(0xFF1976D2),
                                 unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                         )
 
                         OutlinedTextField(
@@ -2690,14 +2716,14 @@ fun DuesLedgerSessionView(
                             label = { Text("Main Amount ৳", fontSize = 11.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color(0xFF0F172A),
                                 unfocusedTextColor = Color(0xFF0F172A),
                                 focusedBorderColor = Color(0xFF1976D2),
                                 unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                         )
 
                         val calendar = Calendar.getInstance()
@@ -2746,15 +2772,15 @@ fun DuesLedgerSessionView(
                                 onValueChange = { },
                                 readOnly = true,
                                 enabled = false,
-                                label = { Text("Date (YYYY-MM-DD HH:MM)", fontSize = 12.sp) },
+                                label = { Text("Date (YYYY-MM-DD HH:MM)", fontSize = 11.sp) },
                                 singleLine = true,
-                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
                                 colors = OutlinedTextFieldDefaults.colors(
                                     disabledTextColor = Color(0xFF0F172A),
                                     disabledBorderColor = Color(0xFFCBD5E1),
                                     disabledPlaceholderColor = Color(0xFF64748B)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                             )
                         }
 
@@ -3339,7 +3365,7 @@ fun TrackerSessionView(
                             OutlinedTextField(
                                 value = viewModel.categoryInput,
                                 onValueChange = { viewModel.categoryInput = it },
-                                placeholder = { Text("Category (e.g. food)", fontSize = 16.sp, maxLines = 1, softWrap = false) },
+                                placeholder = { Text("Category (e.g. food)", fontSize = 14.sp, maxLines = 1, softWrap = false) },
                                 singleLine = true,
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedTextColor = Color(0xFF0F172A),
@@ -3347,14 +3373,14 @@ fun TrackerSessionView(
                                     focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                     unfocusedBorderColor = Color(0xFFCBD5E1)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
-                                modifier = Modifier.weight(1.2f).height(48.dp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
+                                modifier = Modifier.weight(1.2f).height(52.dp)
                             )
 
                             OutlinedTextField(
                                 value = viewModel.amountInput,
                                 onValueChange = { viewModel.amountInput = it },
-                                placeholder = { Text("Amount (৳)", fontSize = 16.sp, maxLines = 1, softWrap = false) },
+                                placeholder = { Text("Amount (৳)", fontSize = 14.sp, maxLines = 1, softWrap = false) },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true,
                                 colors = OutlinedTextFieldDefaults.colors(
@@ -3363,8 +3389,8 @@ fun TrackerSessionView(
                                     focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                     unfocusedBorderColor = Color(0xFFCBD5E1)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
-                                modifier = Modifier.weight(1f).height(48.dp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
+                                modifier = Modifier.weight(1f).height(52.dp)
                             )
                         }
 
@@ -3379,7 +3405,7 @@ fun TrackerSessionView(
                                 onValueChange = { },
                                 readOnly = true,
                                 enabled = false,
-                                placeholder = { Text("Date & Time", fontSize = 16.sp, maxLines = 1, softWrap = false) },
+                                placeholder = { Text("Date & Time", fontSize = 14.sp, maxLines = 1, softWrap = false) },
                                 trailingIcon = {
                                     IconButton(onClick = { datePickerDialog.show() }) {
                                         Text("🕒", fontSize = 13.sp)
@@ -3390,8 +3416,8 @@ fun TrackerSessionView(
                                     disabledBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                     disabledPlaceholderColor = Color(0xFF64748B)
                                 ),
-                                textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
-                                modifier = Modifier.fillMaxWidth().height(48.dp)
+                                textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
+                                modifier = Modifier.fillMaxWidth().height(52.dp)
                             )
                         }
 
@@ -3399,7 +3425,7 @@ fun TrackerSessionView(
                         OutlinedTextField(
                             value = viewModel.noteInput,
                             onValueChange = { viewModel.noteInput = it },
-                            placeholder = { Text("Enter details (optional)...", fontSize = 16.sp) },
+                            placeholder = { Text("Enter details (optional)...", fontSize = 14.sp) },
                             singleLine = false,
                             minLines = 2,
                             maxLines = 2,
@@ -3409,7 +3435,7 @@ fun TrackerSessionView(
                                 focusedBorderColor = if (dialogType == "INCOME") Color(0xFF2E7D32) else Color(0xFFC62828),
                                 unfocusedBorderColor = Color(0xFFCBD5E1)
                             ),
-                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp),
                             modifier = Modifier.fillMaxWidth().height(72.dp)
                         )
                     }
@@ -4232,8 +4258,8 @@ fun NoticeSessionView(
                     OutlinedTextField(
                         value = viewModel.noticeTitleInput,
                         onValueChange = { viewModel.noticeTitleInput = it },
-                        placeholder = { Text("Header", fontSize = 16.sp) },
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        placeholder = { Text("Header", fontSize = 14.sp) },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
@@ -4241,7 +4267,7 @@ fun NoticeSessionView(
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
 
                     // Content input field
@@ -4251,7 +4277,7 @@ fun NoticeSessionView(
                             noticeContentInputState = it 
                             viewModel.noticeContentInput = it.text
                         },
-                        placeholder = { Text("Details", fontSize = 16.sp) },
+                        placeholder = { Text("Details", fontSize = 14.sp) },
                         modifier = Modifier.fillMaxWidth().height(120.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color(0xFF0F172A),
@@ -4259,7 +4285,7 @@ fun NoticeSessionView(
                             focusedBorderColor = Color(0xFF1976D2),
                             unfocusedBorderColor = Color(0xFFCBD5E1)
                         ),
-                        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        textStyle = LocalTextStyle.current.copy(fontSize = 14.sp)
                     )
 
                     // Checkbox helper row
@@ -4740,30 +4766,36 @@ fun DoubleTapDetailsDialog(transaction: TransactionEntity, onDismiss: () -> Unit
 
 @Composable
 fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
-    NavigationBar(
-        containerColor = Color.White,
-        tonalElevation = 8.dp,
+    Surface(
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        color = Color(0xFF2563EB),
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
         modifier = Modifier
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-            .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+            .fillMaxWidth()
     ) {
+        NavigationBar(
+            containerColor = Color.Transparent,
+            tonalElevation = 0.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
         NavigationBarItem(
             selected = activeTab == "ACCOUNT",
             onClick = { onTabSelected("ACCOUNT") },
             icon = { Text("👥", fontSize = 18.sp) },
-            label = { Text("Debts/Credits", fontSize = 10.sp) },
+            label = { Text("Debts/Credits", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
             modifier = Modifier
                 .padding(horizontal = 6.dp, vertical = 4.dp)
                 .background(
-                    color = if (activeTab == "ACCOUNT") Color(0xFF2E7D32).copy(alpha = 0.12f) else Color(0xFFF1F5F9),
+                    color = if (activeTab == "ACCOUNT") Color.White.copy(alpha = 0.15f) else Color.Transparent,
                     shape = RoundedCornerShape(12.dp)
                 ),
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF2E7D32),
-                unselectedIconColor = Color(0xFF64748B),
-                selectedTextColor = Color(0xFF2E7D32),
-                unselectedTextColor = Color(0xFF64748B),
+                selectedIconColor = Color.White,
+                unselectedIconColor = Color.White.copy(alpha = 0.6f),
+                selectedTextColor = Color.White,
+                unselectedTextColor = Color.White.copy(alpha = 0.6f),
                 indicatorColor = Color.Transparent
             )
         )
@@ -4772,18 +4804,18 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
             selected = activeTab == "TRACKER",
             onClick = { onTabSelected("TRACKER") },
             icon = { Text("💸", fontSize = 18.sp) },
-            label = { Text("Tracker", fontSize = 10.sp) },
+            label = { Text("Tracker", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
             modifier = Modifier
                 .padding(horizontal = 6.dp, vertical = 4.dp)
                 .background(
-                    color = if (activeTab == "TRACKER") Color(0xFF1976D2).copy(alpha = 0.12f) else Color(0xFFF1F5F9),
+                    color = if (activeTab == "TRACKER") Color.White.copy(alpha = 0.15f) else Color.Transparent,
                     shape = RoundedCornerShape(12.dp)
                 ),
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF1976D2),
-                unselectedIconColor = Color(0xFF64748B),
-                selectedTextColor = Color(0xFF1976D2),
-                unselectedTextColor = Color(0xFF64748B),
+                selectedIconColor = Color.White,
+                unselectedIconColor = Color.White.copy(alpha = 0.6f),
+                selectedTextColor = Color.White,
+                unselectedTextColor = Color.White.copy(alpha = 0.6f),
                 indicatorColor = Color.Transparent
             )
         )
@@ -4792,20 +4824,21 @@ fun BottomNavigationBar(activeTab: String, onTabSelected: (String) -> Unit) {
             selected = activeTab == "NOTICE",
             onClick = { onTabSelected("NOTICE") },
             icon = { Text("📓", fontSize = 18.sp) },
-            label = { Text("Notebook", fontSize = 10.sp) },
+            label = { Text("Notebook", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
             modifier = Modifier
                 .padding(horizontal = 6.dp, vertical = 4.dp)
                 .background(
-                    color = if (activeTab == "NOTICE") Color(0xFF3498DB).copy(alpha = 0.12f) else Color(0xFFF1F5F9),
+                    color = if (activeTab == "NOTICE") Color.White.copy(alpha = 0.15f) else Color.Transparent,
                     shape = RoundedCornerShape(12.dp)
                 ),
             colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Color(0xFF3498DB),
-                unselectedIconColor = Color(0xFF64748B),
-                selectedTextColor = Color(0xFF3498DB),
-                unselectedTextColor = Color(0xFF64748B),
+                selectedIconColor = Color.White,
+                unselectedIconColor = Color.White.copy(alpha = 0.6f),
+                selectedTextColor = Color.White,
+                unselectedTextColor = Color.White.copy(alpha = 0.6f),
                 indicatorColor = Color.Transparent
             )
         )
+        }
     }
 }
