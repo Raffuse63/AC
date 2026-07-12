@@ -222,23 +222,22 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
         // Wait for first emission from database before enabling auto-upload to cloud, and auto-restore if empty
         viewModelScope.launch {
             try {
-                transactions.first()
-                persons.first()
-                notices.first()
-                profile.first()
+                val dbTxs = dao.getAllTransactionsFlow().first()
+                val dbPersons = dao.getAllPersonsFlow().first()
+                val dbNotices = dao.getAllNoticesFlow().first()
+                dao.getProfileFlow().first()
                 
                 val user = FirebaseAuth.getInstance().currentUser
                 if (user != null) {
-                    val localTxs = transactions.value
-                    val localPersons = persons.value
-                    val localNotices = notices.value
-                    if (localTxs.isEmpty() && localPersons.isEmpty() && localNotices.isEmpty()) {
+                    if (dbTxs.isEmpty() && dbPersons.isEmpty() && dbNotices.isEmpty()) {
                         syncFromCloud(user.uid)
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
+                // Wait for StateFlows to process Room eager emissions
+                kotlinx.coroutines.delay(300)
                 isLocalDataLoadedState.value = true
             }
         }
@@ -833,11 +832,8 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val context = LocalContext.current
-            val sharedPrefs = remember { context.getSharedPreferences("finance_prefs", Context.MODE_PRIVATE) }
-            var currentAccountName by remember { mutableStateOf(sharedPrefs.getString("current_account_name", "Default") ?: "Default") }
-
-            val db = remember(currentAccountName) { FinanceDatabase.getDatabase(context, currentAccountName) }
-            val viewModelFactory = remember(currentAccountName) { FinanceViewModelFactory(db.financeDao()) }
+            val db = remember { FinanceDatabase.getDatabase(context, "Default") }
+            val viewModelFactory = remember { FinanceViewModelFactory(db.financeDao()) }
 
             MaterialTheme(
                 colorScheme = androidx.compose.material3.lightColorScheme(
@@ -850,16 +846,10 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 val viewModel: FinanceViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
-                    key = currentAccountName,
                     factory = viewModelFactory
                 )
                 FinanceApp(
-                    viewModel = viewModel,
-                    currentAccountName = currentAccountName,
-                    onAccountChange = { newAccount ->
-                        sharedPrefs.edit().putString("current_account_name", newAccount).apply()
-                        currentAccountName = newAccount
-                    }
+                    viewModel = viewModel
                 )
             }
         }
@@ -873,9 +863,7 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FinanceApp(
-    viewModel: FinanceViewModel,
-    currentAccountName: String,
-    onAccountChange: (String) -> Unit
+    viewModel: FinanceViewModel
 ) {
     val context = LocalContext.current
     val profileState by viewModel.profile.collectAsStateWithLifecycle()
@@ -1138,8 +1126,6 @@ fun FinanceApp(
                 // Top App Header
                 AppHeader(
                     viewModel = viewModel,
-                    currentAccountName = currentAccountName,
-                    onAccountChange = onAccountChange,
                     onBackupClick = {
                         viewModel.backupJsonText = viewModel.generateBackupJsonString()
                         createDocumentLauncher.launch("finance_backup.json")
@@ -1290,8 +1276,6 @@ fun CredentialRow(label: String, value: String, context: Context) {
 @Composable
 fun AppHeader(
     viewModel: FinanceViewModel,
-    currentAccountName: String,
-    onAccountChange: (String) -> Unit,
     onBackupClick: () -> Unit,
     onRestoreClick: () -> Unit,
     showDrawer: Boolean,
@@ -1381,7 +1365,7 @@ fun AppHeader(
 
                     // Profile Name
                     Text(
-                        text = currentUser?.displayName ?: "অতিথি ইউজার (লগইন করা নেই)",
+                        text = currentUser?.displayName ?: "Guest User",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF0F172A)
@@ -1408,7 +1392,6 @@ fun AppHeader(
                         )
                         Text(
                             text = "প্রধান ফিচারসমূহ ✨:\n" +
-                                    "• একাধিক একাউন্ট পরিবর্তন সুবিধা (পার্সোনাল, বিজনেস, ফ্যামিলি)\n" +
                                     "• ক্লাউড ও অটোমেটিক ডেটা সিঙ্ক সুবিধা\n" +
                                     "• সহজ দেনা-পাওনা লেজার বুক\n" +
                                     "• বিস্তারিত ইনকাম এবং এক্সপেন্স ট্র্যাকার\n" +
