@@ -22,6 +22,9 @@ interface MarketItemDao {
     @Delete
     suspend fun deleteItem(item: MarketItem)
 
+    @Query("DELETE FROM market_items")
+    suspend fun clearAllItems()
+
     @Query("DELETE FROM market_items WHERE id = :id")
     suspend fun deleteItemById(id: Int)
 }

@@ -1,5 +1,8 @@
 package com.example
 
+import com.example.data.AppDatabase
+import com.example.data.MarketItemDao
+import com.example.data.MarketItem
 import android.content.Context
 import android.os.Bundle
 import android.widget.Toast
@@ -201,7 +204,7 @@ abstract class FinanceDatabase : RoomDatabase() {
 // VIEWMODEL FOR STATE MANAGEMENT
 // ============================================================================
 
-class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
+class FinanceViewModel(val dao: FinanceDao, val marketItemDao: MarketItemDao) : ViewModel() {
     val profile = dao.getProfileFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
@@ -212,6 +215,9 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val persons = dao.getAllPersonsFlow()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val marketItems = marketItemDao.getAllItems()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Firebase and Google Sign-In state
@@ -227,11 +233,12 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
                 val dbTxs = dao.getAllTransactionsFlow().first()
                 val dbPersons = dao.getAllPersonsFlow().first()
                 val dbNotices = dao.getAllNoticesFlow().first()
+                val dbMarket = marketItemDao.getAllItems().first()
                 dao.getProfileFlow().first()
                 
                 val user = FirebaseAuth.getInstance().currentUser
                 if (user != null) {
-                    if (dbTxs.isEmpty() && dbPersons.isEmpty() && dbNotices.isEmpty()) {
+                    if (dbTxs.isEmpty() && dbPersons.isEmpty() && dbNotices.isEmpty() && dbMarket.isEmpty()) {
                         syncFromCloud(user.uid)
                     }
                 }
@@ -246,7 +253,10 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
 
         // Observe local database changes and upload to cloud if signed in
         viewModelScope.launch {
-            combine(transactions, persons, notices, profile, isLocalDataLoadedState) { _, _, _, _, loaded ->
+            val dbChanges = combine(transactions, persons, notices, profile, marketItems) { _, _, _, _, _ ->
+                true
+            }
+            combine(dbChanges, isLocalDataLoadedState) { _, loaded ->
                 loaded
             }.collect { loaded ->
                 val user = FirebaseAuth.getInstance().currentUser
@@ -301,7 +311,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
                     // No data on cloud, save local data if not empty
                     isConnectingToCloud = false
                     val localJson = generateBackupJsonString()
-                    if (localJson.isNotEmpty() && (transactions.value.isNotEmpty() || persons.value.isNotEmpty() || notices.value.isNotEmpty())) {
+                    if (localJson.isNotEmpty() && (transactions.value.isNotEmpty() || persons.value.isNotEmpty() || notices.value.isNotEmpty() || marketItems.value.isNotEmpty())) {
                         dbRef.setValue(localJson)
                     }
                 }
@@ -321,6 +331,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
                 dao.clearPersons()
                 dao.clearNotices()
                 dao.clearProfile()
+                marketItemDao.clearAllItems()
                 // Default profile setup
                 dao.insertProfile(ProfileEntity(1, 0.0, 0.0, false))
             } catch (e: Exception) {
@@ -441,6 +452,21 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
             }
             rootObj.put("notices", noticesArray)
 
+            // Market Items (Bazaar)
+            val marketItemsArray = JSONArray()
+            marketItems.value.forEach { item ->
+                val itemObj = JSONObject()
+                itemObj.put("id", item.id)
+                itemObj.put("description", item.description)
+                itemObj.put("quantity", item.quantity)
+                itemObj.put("targetPrice", item.targetPrice)
+                itemObj.put("actualPrice", item.actualPrice)
+                itemObj.put("isActive", item.isActive)
+                itemObj.put("timestamp", item.timestamp)
+                marketItemsArray.put(itemObj)
+            }
+            rootObj.put("market_items", marketItemsArray)
+
             rootObj.toString(2)
         } catch (e: Exception) {
             ""
@@ -450,7 +476,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
     suspend fun restoreFromJsonString(jsonString: String): Boolean {
         return try {
             val rootObj = JSONObject(jsonString)
-            if (!rootObj.has("transactions") && !rootObj.has("persons") && !rootObj.has("notices") && !rootObj.has("profile")) {
+            if (!rootObj.has("transactions") && !rootObj.has("persons") && !rootObj.has("notices") && !rootObj.has("profile") && !rootObj.has("market_items")) {
                 return false
             }
 
@@ -459,6 +485,7 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
             dao.clearPersons()
             dao.clearNotices()
             dao.clearProfile()
+            marketItemDao.clearAllItems()
 
             // Restore Profile
             if (rootObj.has("profile")) {
@@ -520,6 +547,24 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
                         colorHex = nObj.optString("colorHex", "#FFF9C4")
                     )
                     dao.insertNotice(notice)
+                }
+            }
+
+            // Restore Market Items
+            if (rootObj.has("market_items")) {
+                val mArray = rootObj.getJSONArray("market_items")
+                for (i in 0 until mArray.length()) {
+                    val mObj = mArray.getJSONObject(i)
+                    val item = MarketItem(
+                        id = mObj.getInt("id"),
+                        description = mObj.getString("description"),
+                        quantity = mObj.optString("quantity", ""),
+                        targetPrice = mObj.optDouble("targetPrice", 0.0),
+                        actualPrice = mObj.optDouble("actualPrice", 0.0),
+                        isActive = mObj.optBoolean("isActive", true),
+                        timestamp = mObj.optLong("timestamp", System.currentTimeMillis())
+                    )
+                    marketItemDao.insertItem(item)
                 }
             }
 
@@ -818,11 +863,14 @@ class FinanceViewModel(val dao: FinanceDao) : ViewModel() {
     }
 }
 
-class FinanceViewModelFactory(private val dao: FinanceDao) : ViewModelProvider.Factory {
+class FinanceViewModelFactory(
+    private val dao: FinanceDao,
+    private val marketItemDao: MarketItemDao
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(FinanceViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return FinanceViewModel(dao) as T
+            return FinanceViewModel(dao, marketItemDao) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -840,7 +888,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = LocalContext.current
             val db = remember { FinanceDatabase.getDatabase(context, "Default") }
-            val viewModelFactory = remember { FinanceViewModelFactory(db.financeDao()) }
+            val marketDb = remember { AppDatabase.getDatabase(context) }
+            val viewModelFactory = remember { FinanceViewModelFactory(db.financeDao(), marketDb.marketItemDao()) }
 
             MaterialTheme(
                 colorScheme = androidx.compose.material3.lightColorScheme(
