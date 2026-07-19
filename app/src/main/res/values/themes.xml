@@ -2,7 +2,6 @@
 <resources>
 
     <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar">
-        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
-        <item name="android:windowSplashScreenBackground">#FFFFFF</item>
+        <!-- Base theme attributes for all API levels -->
     </style>
 </resources>
