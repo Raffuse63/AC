@@ -3,6 +3,12 @@ package com.example.ui
 import android.os.Bundle
 import android.widget.Toast
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -57,8 +63,24 @@ fun MarketApp(
     val focusManager = LocalFocusManager.current
 
     // Multi-selection states for pushing to Tracker
-    var isSelectionMode by remember { mutableStateOf(false) }
-    var selectedItemIds by remember { mutableStateOf(setOf<Int>()) }
+    var isSelectionMode by remember(viewModel) {
+        object : androidx.compose.runtime.MutableState<Boolean> {
+            override var value: Boolean
+                get() = viewModel.isSelectionMode
+                set(value) { viewModel.isSelectionMode = value }
+            override fun component1(): Boolean = value
+            override fun component2(): (Boolean) -> Unit = { value = it }
+        }
+    }
+    var selectedItemIds by remember(viewModel) {
+        object : androidx.compose.runtime.MutableState<Set<Int>> {
+            override var value: Set<Int>
+                get() = viewModel.selectedItemIds
+                set(value) { viewModel.selectedItemIds = value }
+            override fun component1(): Set<Int> = value
+            override fun component2(): (Set<Int>) -> Unit = { value = it }
+        }
+    }
 
     // Dialog State for custom edit modal
     var editingItem by remember { mutableStateOf<MarketItem?>(null) }
@@ -98,17 +120,26 @@ fun MarketApp(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFFEFF6FF))
+            .pointerInput(Unit) {
+                detectTapGestures {
+                    focusManager.clearFocus()
+                }
+            }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        focusManager.clearFocus()
+                    }
+                }
         ) {
             // Summary Card - Styled like Tracker's summary card, placed at the absolute top (fixed)
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(start = 0.dp, top = 0.dp, end = 0.dp, bottom = 8.dp)
                     .shadow(
                         elevation = 8.dp,
                         shape = RoundedCornerShape(16.dp),
@@ -142,6 +173,11 @@ fun MarketApp(
                             )
                         )
                         .padding(horizontal = 14.dp, vertical = 12.dp)
+                        .pointerInput(Unit) {
+                            detectTapGestures {
+                                focusManager.clearFocus()
+                            }
+                        }
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -205,7 +241,7 @@ fun MarketApp(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (isSelectionMode) "সিলেক্ট করা হয়েছে: ${convertToBengaliNumber(selectedItemIds.size.toString())}টি" else "বাজারের তালিকা (ডাবল-ট্যাপ এ এডিট, লং-প্রেস এ ডিলিট)",
+                        text = if (isSelectionMode) "সিলেক্ট করা হয়েছে: ${convertToBengaliNumber(selectedItemIds.size.toString())}টি" else "বাজারের তালিকা",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = if (isSelectionMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
@@ -243,7 +279,12 @@ fun MarketApp(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            focusManager.clearFocus()
+                        }
+                    },
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (sortedItems.isNotEmpty()) {
@@ -367,189 +408,7 @@ fun MarketApp(
             }
         }
 
-        // Floating "Push to Tracker" and calculation On/Off buttons panel at the bottom center when items are selected
-        if (isSelectionMode && selectedItemIds.isNotEmpty()) {
-            val selectedItems = items.filter { it.id in selectedItemIds }
-            val totalPushAmount = selectedItems.filter { it.isActive }.sumOf { if (it.actualPrice > 0.0) it.actualPrice else it.targetPrice }
-
-            Card(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp)
-                    .padding(horizontal = 12.dp)
-                    .fillMaxWidth()
-                    .shadow(
-                        elevation = 12.dp,
-                        shape = RoundedCornerShape(16.dp),
-                        clip = false,
-                        ambientColor = Color(0xFF1E293B).copy(alpha = 0.15f),
-                        spotColor = Color(0xFF1E293B).copy(alpha = 0.2f)
-                    ),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                border = BorderStroke(1.dp, Color(0xFFE2E8F0))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .padding(8.dp)
-                        .fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Off Button
-                    Button(
-                        onClick = {
-                            selectedItems.forEach { item ->
-                                viewModel.updateItemActiveStatus(item, isActive = false)
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF64748B), // Slate/grey color for "Off"
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(40.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Clear, // Off symbol
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = "অফ (Off)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    // On Button
-                    Button(
-                        onClick = {
-                            selectedItems.forEach { item ->
-                                viewModel.updateItemActiveStatus(item, isActive = true)
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF10B981), // Emerald green color for "On"
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(40.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Check, // On symbol
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = "অন (On)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    // Push to Tracker Button
-                    Button(
-                        onClick = {
-                            val activeSelectedItems = selectedItems.filter { it.isActive }
-                            if (activeSelectedItems.isEmpty()) {
-                                Toast.makeText(context, "কোনো হিসাব অন থাকা আইটেম সিলেক্ট করা নেই!", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-
-                            val noteBuilder = activeSelectedItems.joinToString("") { item ->
-                                val price = if (item.actualPrice > 0.0) item.actualPrice else item.targetPrice
-                                "${item.description} (${item.quantity}) - ৳${if (price % 1.0 == 0.0) price.toInt() else price}\n"
-                            }
-                            
-                            if (financeViewModel != null) {
-                                try {
-                                    // Prefill the tracker dialog fields in FinanceViewModel
-                                    financeViewModel.cancelEditing()
-                                    financeViewModel.amountInput = if (totalPushAmount % 1.0 == 0.0) totalPushAmount.toInt().toString() else totalPushAmount.toString()
-                                    financeViewModel.categoryInput = "বাজার"
-                                    financeViewModel.noteInput = noteBuilder
-                                    financeViewModel.activeFormType = "EXPENSE"
-                                    financeViewModel.selectedPersonName = "General"
-                                    financeViewModel.resetTrackerFormDateTime()
-                                    
-                                    // Mark selected items as completed/paid in the Bazar list
-                                    activeSelectedItems.forEach { item ->
-                                        if (item.actualPrice == 0.0) {
-                                            viewModel.updateActualPrice(item, item.targetPrice)
-                                        }
-                                    }
-                                    
-                                    // Navigate to Tracker and display the dialog
-                                    financeViewModel.currentTab = "TRACKER"
-                                    financeViewModel.showAddTransactionDialog = true
-                                    
-                                    Toast.makeText(context, "ট্রেকার ডায়লগে বাজার তালিকা যুক্ত করা হয়েছে! 🛒", Toast.LENGTH_LONG).show()
-                                    
-                                    isSelectionMode = false
-                                    selectedItemIds = emptySet()
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "ত্রুটি: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                            } else {
-                                Toast.makeText(context, "ট্রেকার পাওয়া যায়নি!", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier
-                            .weight(1.8f)
-                            .height(40.dp)
-                            .shadow(
-                                elevation = 6.dp,
-                                shape = RoundedCornerShape(8.dp),
-                                clip = false,
-                                ambientColor = Color(0xFF2563EB).copy(alpha = 0.25f),
-                                spotColor = Color(0xFF2563EB).copy(alpha = 0.35f)
-                            ),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF2563EB),
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Send,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "ট্রেকারে যুক্ত (৳${convertToBengaliNumber(String.format(Locale.US, "%,.0f", totalPushAmount))})",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        // Floating buttons have been relocated to the floatingActionButton slot in MainActivity next to the plus button.
     }
 
     // Custom dialog edit modal for double-tap edit
@@ -581,7 +440,9 @@ fun MarketApp(
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                 ) {
                     OutlinedTextField(
                         value = editDesc,
@@ -801,7 +662,8 @@ fun MarketApp(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = 8.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedTextField(
@@ -956,10 +818,11 @@ fun MarketItemRow(
     onSelectedChange: (Boolean) -> Unit = {}
 ) {
     // Key remember block on both item.id and item.actualPrice to stay in perfect sync with edits
-    var actualText by remember(item.id, item.actualPrice) {
-        mutableStateOf(if (item.actualPrice == 0.0) "" else {
+    var actualInputState by remember(item.id, item.actualPrice) {
+        val text = if (item.actualPrice == 0.0) "" else {
             if (item.actualPrice % 1.0 == 0.0) item.actualPrice.toInt().toString() else item.actualPrice.toString()
-        })
+        }
+        mutableStateOf(TextFieldValue(text = text, selection = TextRange(text.length)))
     }
     var isEditingActual by remember { mutableStateOf(false) }
     var hasBeenFocused by remember(isEditingActual) { mutableStateOf(false) }
@@ -987,17 +850,17 @@ fun MarketItemRow(
     }
 
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
             containerColor = cardBgColor
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 5.dp), // Elevated box shadow for beautiful depth
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp), // Elevated box shadow for beautiful depth
         modifier = Modifier
             .fillMaxWidth()
             .border(
-                width = 1.2.dp,
+                width = 1.dp,
                 color = cardBorderColor,
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(10.dp)
             )
             .combinedClickable(
                 onDoubleClick = {
@@ -1013,6 +876,8 @@ fun MarketItemRow(
                 onClick = {
                     if (isSelectionMode) {
                         onSelectedChange(!isSelected)
+                    } else {
+                        focusManager.clearFocus()
                     }
                 }
             )
@@ -1021,7 +886,7 @@ fun MarketItemRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1030,17 +895,17 @@ fun MarketItemRow(
                 IconButton(
                     onClick = { onSelectedChange(!isSelected) },
                     modifier = Modifier
-                        .padding(end = 8.dp)
-                        .size(32.dp)
+                        .padding(end = 6.dp)
+                        .size(28.dp)
                         .testTag("checkbox_${item.id}")
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(22.dp)
+                            .size(18.dp)
                             .clip(CircleShape)
                             .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
                             .border(
-                                width = 2.dp,
+                                width = 1.5.dp,
                                 color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
                                 shape = CircleShape
                             ),
@@ -1051,83 +916,77 @@ fun MarketItemRow(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = null,
                                 tint = Color.White,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(12.dp)
                             )
                         }
                     }
                 }
             }
 
-            // Left side column containing description, quantity tag side-by-side, and target below
+            // Left side column containing description and target below
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 8.dp)
+                    .padding(end = 6.dp)
             ) {
-                // Description and Quantity tag badge side-by-side
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = item.description,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isActiveItem) MaterialTheme.colorScheme.onSurface else Color(0xFF94A3B8),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.testTag("item_description_${item.id}")
-                    )
+                Text(
+                    text = item.description,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                    fontWeight = FontWeight.Bold,
+                    color = if (isActiveItem) MaterialTheme.colorScheme.onSurface else Color(0xFF94A3B8),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("item_description_${item.id}")
+                )
 
-                    // Distinct background badge/chip for quantity (পরিমাণ)
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isActiveItem) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color(0xFFE2E8F0))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = item.quantity,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isActiveItem) MaterialTheme.colorScheme.primary else Color(0xFF64748B),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("item_quantity_${item.id}")
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(1.dp))
 
                 // Target price under description
                 Text(
                     text = "টার্গেট: ৳${if (item.targetPrice % 1.0 == 0.0) item.targetPrice.toInt() else item.targetPrice}",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                     fontWeight = FontWeight.Medium,
                     color = if (isActiveItem) MaterialTheme.colorScheme.outlineVariant else Color(0xFF94A3B8),
                     modifier = Modifier.testTag("item_target_${item.id}")
                 )
             }
 
-            // Right side inputs and controls: larger font styling
+            // Right side inputs and controls: scaled font styling
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // Distinct background badge/chip for quantity (পরিমাণ)
+                Box(
+                    modifier = Modifier
+                        .background(
+                            color = if (isActiveItem) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f) else Color(0xFFF1F5F9),
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        text = item.quantity,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        fontWeight = FontWeight.Bold,
+                        color = if (isActiveItem) MaterialTheme.colorScheme.onSecondaryContainer else Color(0xFF64748B)
+                    )
+                }
+
                 if (isEditingActual && isActiveItem) {
                     // Actual price numeric input field
                     Box(
                         modifier = Modifier
-                            .width(105.dp)
-                            .height(42.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .width(85.dp)
+                            .height(32.dp)
+                            .clip(RoundedCornerShape(6.dp))
                             .background(MaterialTheme.colorScheme.background)
                             .border(
-                                width = 1.2.dp,
+                                width = 1.dp,
                                 color = MaterialTheme.colorScheme.primary,
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(6.dp)
                             )
-                            .padding(horizontal = 8.dp),
+                            .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Row(
@@ -1135,10 +994,13 @@ fun MarketItemRow(
                             horizontalArrangement = Arrangement.End
                         ) {
                             BasicTextField(
-                                value = actualText,
+                                value = actualInputState,
                                 onValueChange = { input ->
-                                    if (input.isEmpty() || input.toDoubleOrNull() != null || input == ".") {
-                                        actualText = input
+                                    val txt = input.text
+                                    if (txt.isEmpty() || txt.toDoubleOrNull() != null || txt == ".") {
+                                        actualInputState = input.copy(
+                                            selection = TextRange(txt.length)
+                                        )
                                     }
                                 },
                                 keyboardOptions = KeyboardOptions(
@@ -1148,16 +1010,16 @@ fun MarketItemRow(
                                 keyboardActions = KeyboardActions(
                                     onDone = {
                                         isEditingActual = false
-                                        val value = actualText.toDoubleOrNull() ?: 0.0
+                                        val value = actualInputState.text.toDoubleOrNull() ?: 0.0
                                         onActualChange(value)
                                         focusManager.clearFocus()
                                     }
                                 ),
-                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
                                     color = MaterialTheme.colorScheme.onSurface,
                                     textAlign = TextAlign.End,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 17.sp // Enlarged text
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
                                 ),
                                 singleLine = true,
                                 modifier = Modifier
@@ -1167,9 +1029,14 @@ fun MarketItemRow(
                                     .onFocusChanged { focusState ->
                                         if (focusState.isFocused) {
                                             hasBeenFocused = true
+                                            val currentText = actualInputState.text
+                                            actualInputState = TextFieldValue(
+                                                text = currentText,
+                                                selection = TextRange(currentText.length)
+                                            )
                                         } else if (hasBeenFocused) {
                                             isEditingActual = false
-                                            val value = actualText.toDoubleOrNull() ?: 0.0
+                                            val value = actualInputState.text.toDoubleOrNull() ?: 0.0
                                             onActualChange(value)
                                         }
                                     }
@@ -1179,12 +1046,12 @@ fun MarketItemRow(
                                 text = "৳",
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
+                                fontSize = 11.sp
                             )
                         }
                     }
                 } else {
-                    // Plain clickable Text representing actual price, turns to input on click (Larger font style)
+                    // Plain clickable Text representing actual price, turns to input on click
                     val displayActualText = if (item.actualPrice == 0.0) "খরচ লিখুন" else {
                         "৳${if (item.actualPrice % 1.0 == 0.0) item.actualPrice.toInt().toString() else item.actualPrice.toString()}"
                     }
@@ -1198,27 +1065,34 @@ fun MarketItemRow(
 
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(6.dp))
                             .background(if (isActiveItem) MaterialTheme.colorScheme.background else Color(0xFFE2E8F0))
                             .border(
                                 width = 1.dp,
                                 color = if (isActiveItem) MaterialTheme.colorScheme.outline.copy(alpha = 0.25f) else Color(0xFFCBD5E1),
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(6.dp)
                             )
                             .clickable {
                                 if (isActiveItem) {
+                                    val text = if (item.actualPrice == 0.0) "" else {
+                                        if (item.actualPrice % 1.0 == 0.0) item.actualPrice.toInt().toString() else item.actualPrice.toString()
+                                    }
+                                    actualInputState = TextFieldValue(
+                                        text = text,
+                                        selection = TextRange(text.length)
+                                    )
                                     isEditingActual = true
                                 }
                             }
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
                             text = displayActualText,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
                             color = displayColor,
                             textAlign = TextAlign.Center,
-                            fontSize = 16.sp // Enlarged text
+                            fontSize = 13.sp
                         )
                     }
                 }

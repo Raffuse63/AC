@@ -18,6 +18,8 @@ import kotlinx.coroutines.launch
 class MarketViewModel(private val repository: MarketItemRepository) : ViewModel() {
 
     var showAddItemDialog by mutableStateOf(false)
+    var isSelectionMode by mutableStateOf(false)
+    var selectedItemIds by mutableStateOf(setOf<Int>())
 
     val items: StateFlow<List<MarketItem>> = repository.allItems
         .stateIn(

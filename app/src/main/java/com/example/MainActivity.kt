@@ -1089,6 +1089,11 @@ fun FinanceApp(
                 onTabSelected = { viewModel.currentTab = it }
             )
         },
+        floatingActionButtonPosition = if (viewModel.currentTab == "BAZAR" && marketViewModel.isSelectionMode && marketViewModel.selectedItemIds.isNotEmpty()) {
+            androidx.compose.material3.FabPosition.Center
+        } else {
+            androidx.compose.material3.FabPosition.End
+        },
         floatingActionButton = {
             if (viewModel.currentTab == "NOTICE") {
                 FloatingActionButton(
@@ -1132,16 +1137,154 @@ fun FinanceApp(
                     )
                 }
             } else if (viewModel.currentTab == "BAZAR") {
-                FloatingActionButton(
-                    onClick = { marketViewModel.showAddItemDialog = true },
-                    containerColor = Color(0xFF2563EB),
-                    contentColor = Color.White,
-                    modifier = Modifier.testTag("add_bazar_item_fab")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Add Bazar Item"
-                    )
+                val context = LocalContext.current
+                val items by marketViewModel.items.collectAsStateWithLifecycle()
+                val isSelectionMode = marketViewModel.isSelectionMode
+                val selectedItemIds = marketViewModel.selectedItemIds
+
+                if (isSelectionMode && selectedItemIds.isNotEmpty()) {
+                    val selectedItems = items.filter { it.id in selectedItemIds }
+                    val totalPushAmount = selectedItems.filter { it.isActive }.sumOf { if (it.actualPrice > 0.0) it.actualPrice else it.targetPrice }
+
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Off FAB (Slate)
+                        FloatingActionButton(
+                            onClick = {
+                                selectedItems.forEach { item ->
+                                    marketViewModel.updateItemActiveStatus(item, isActive = false)
+                                }
+                            },
+                            containerColor = Color(0xFF64748B),
+                            contentColor = Color.White,
+                            modifier = Modifier.height(40.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Clear,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "অফ (Off)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // On FAB (Green)
+                        FloatingActionButton(
+                            onClick = {
+                                selectedItems.forEach { item ->
+                                    marketViewModel.updateItemActiveStatus(item, isActive = true)
+                                }
+                            },
+                            containerColor = Color(0xFF10B981),
+                            contentColor = Color.White,
+                            modifier = Modifier.height(40.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "অন (On)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Push to Tracker FAB (Blue)
+                        FloatingActionButton(
+                            onClick = {
+                                val activeSelectedItems = selectedItems.filter { it.isActive }
+                                if (activeSelectedItems.isEmpty()) {
+                                    Toast.makeText(context, "কোনো হিসাব অন থাকা আইটেম সিলেক্ট করা নেই!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val noteBuilder = activeSelectedItems.joinToString("") { item ->
+                                        val price = if (item.actualPrice > 0.0) item.actualPrice else item.targetPrice
+                                        "${item.description} (${item.quantity}) - ৳${if (price % 1.0 == 0.0) price.toInt() else price}\n"
+                                    }
+                                    
+                                    try {
+                                        viewModel.cancelEditing()
+                                        viewModel.amountInput = if (totalPushAmount % 1.0 == 0.0) totalPushAmount.toInt().toString() else totalPushAmount.toString()
+                                        viewModel.categoryInput = "বাজার"
+                                        viewModel.noteInput = noteBuilder
+                                        viewModel.activeFormType = "EXPENSE"
+                                        viewModel.selectedPersonName = "General"
+                                        viewModel.resetTrackerFormDateTime()
+                                        
+                                        activeSelectedItems.forEach { item ->
+                                            if (item.actualPrice == 0.0) {
+                                                marketViewModel.updateActualPrice(item, item.targetPrice)
+                                            }
+                                        }
+                                        
+                                        viewModel.currentTab = "TRACKER"
+                                        viewModel.showAddTransactionDialog = true
+                                        
+                                        Toast.makeText(context, "ট্রেকার ডায়লগে বাজার তালিকা যুক্ত করা হয়েছে! 🛒", Toast.LENGTH_LONG).show()
+                                        
+                                        marketViewModel.isSelectionMode = false
+                                        marketViewModel.selectedItemIds = emptySet()
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "ত্রুটি: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            containerColor = Color(0xFF2563EB),
+                            contentColor = Color.White,
+                            modifier = Modifier.height(40.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Send,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "ট্রেকারে যুক্ত (৳${convertToBengaliNumber(String.format(java.util.Locale.US, "%,.0f", totalPushAmount))})",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    FloatingActionButton(
+                        onClick = { marketViewModel.showAddItemDialog = true },
+                        containerColor = Color(0xFF2563EB),
+                        contentColor = Color.White,
+                        modifier = Modifier.testTag("add_bazar_item_fab")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Add Bazar Item"
+                        )
+                    }
                 }
             }
         },
@@ -1893,15 +2036,16 @@ fun expandTransactions(txList: List<TransactionEntity>): List<TransactionEntity>
             val repayments = parseRepayments(tx.repaymentsCsv)
             for (rep in repayments) {
                 val syntheticType = if (tx.type == "EXPENSE") "INCOME" else "EXPENSE"
-                val syntheticCategory = "Repayment: ${tx.category}"
+                val mainDetails = if (tx.note.isNotBlank()) tx.note else tx.category
+                val syntheticNote = "Repayment: $mainDetails"
                 result.add(
                     TransactionEntity(
                         id = -tx.id - rep.timestamp.toInt().coerceAtLeast(1),
                         amount = rep.amount,
                         type = syntheticType,
-                        category = syntheticCategory,
+                        category = "Account",
                         dateTime = rep.timestamp,
-                        note = "From/To ${tx.personName}",
+                        note = syntheticNote,
                         personName = tx.personName,
                         paidAmount = 0.0,
                         repaymentsCsv = "",
@@ -2419,7 +2563,9 @@ fun DuesLedgerSessionView(
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier
+                        .padding(14.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
@@ -2488,7 +2634,9 @@ fun DuesLedgerSessionView(
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier
+                        .padding(14.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
@@ -2541,9 +2689,9 @@ fun DuesLedgerSessionView(
                                             TransactionEntity(
                                                 amount = amt,
                                                 type = "EXPENSE",
-                                                category = desc,
+                                                category = "Account",
                                                 dateTime = System.currentTimeMillis(),
-                                                note = "",
+                                                note = desc,
                                                 personName = person.name,
                                                 isPersonal = true
                                             )
@@ -2573,9 +2721,9 @@ fun DuesLedgerSessionView(
                                             TransactionEntity(
                                                 amount = amt,
                                                 type = "INCOME",
-                                                category = desc,
+                                                category = "Account",
                                                 dateTime = System.currentTimeMillis(),
-                                                note = "",
+                                                note = desc,
                                                 personName = person.name,
                                                 isPersonal = true
                                             )
@@ -2613,7 +2761,9 @@ fun DuesLedgerSessionView(
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier
+                        .padding(14.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
@@ -3363,7 +3513,9 @@ fun TrackerSessionView(
                 text = {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
                     ) {
                         // 0. Toggle between INCOME and EXPENSE
                         Row(
@@ -3931,7 +4083,7 @@ fun TrackerSessionView(
                             )
                             listOf(
                                 "CATEGORY" to "📂 ক্যাটাগরি তালিকা",
-                                "GROUP" to "👥 গ্রুপ/ব্যক্তি তালিকা"
+                                "GROUP" to "👥 গ্রুপ তালিকা"
                             ).forEach { (mode, label) ->
                                 val isSelected = searchViewMode == mode
                                 Box(
@@ -4015,15 +4167,26 @@ fun TrackerSessionView(
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Text(
-                                                    text = if (category.isEmpty()) "অন্যান্য" else category,
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = Color(0xFF0F172A),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f)
-                                                )
+                                                Row(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.List,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFF1976D2),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Text(
+                                                        text = if (category.isEmpty()) "অন্যান্য" else category,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = Color(0xFF0F172A),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
                                                 Text(
                                                     text = "৳${String.format(Locale.US, "%,.0f", total)}",
                                                     fontSize = 10.sp,
@@ -4048,7 +4211,7 @@ fun TrackerSessionView(
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = "👥 গ্রুপ/ব্যক্তি খরচ:",
+                                        text = "👥 গ্রুপ খরচ:",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color(0xFF475569)
@@ -4073,15 +4236,26 @@ fun TrackerSessionView(
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Text(
-                                                    text = displayName,
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = Color(0xFF0F172A),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f)
-                                                )
+                                                Row(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Person,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFF1976D2),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Text(
+                                                        text = displayName,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = Color(0xFF0F172A),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
                                                 Text(
                                                     text = "৳${String.format(Locale.US, "%,.0f", total)}",
                                                     fontSize = 10.sp,
@@ -4400,15 +4574,13 @@ fun TransactionItemRow(
                                 !transaction.personName.trim().equals("সাধারণ", ignoreCase = true) &&
                                 !transaction.personName.trim().equals("general", ignoreCase = true)
 
-                        val dispCategory = transaction.category
+                        val dispCategory = if (transaction.isPersonal) transaction.personName else transaction.category
 
                         Text(
                             text = dispCategory,
                             color = Color(0xFF0F172A),
                             fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            fontWeight = FontWeight.Bold
                         )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -4419,15 +4591,17 @@ fun TransactionItemRow(
                                 color = Color(0xFF64748B),
                                 fontSize = 9.sp
                             )
-                            if (hasGroup) {
+                            if (transaction.isPersonal) {
+                                // সাব টাইটেল e কিছু প্রদর্শিত হবে না
+                            } else if (hasGroup) {
                                 Text(
                                     text = "•",
                                     color = Color(0xFF94A3B8),
                                     fontSize = 9.sp
                                 )
                                 Text(
-                                    text = if (transaction.isPersonal) "👤 ${transaction.personName}" else "👥 ${transaction.personName}",
-                                    color = if (transaction.isPersonal) Color(0xFFC62828) else Color(0xFF1976D2),
+                                    text = "👥 ${transaction.personName}",
+                                    color = Color(0xFF1976D2),
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -4497,7 +4671,9 @@ fun NoticeSessionView(
                 border = BorderStroke(1.dp, Color(0xFFE2E8F0))
             ) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier
+                        .padding(14.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
@@ -4909,9 +5085,17 @@ fun DoubleTapDetailsDialog(transaction: TransactionEntity, onDismiss: () -> Unit
     val isIncome = transaction.type == "INCOME"
     val isPersonal = transaction.isPersonal
 
-    val displayDetails = if (transaction.note.isNotBlank()) transaction.note else "No details provided."
+    val displayDetails = if (isPersonal) {
+        if (transaction.note.isNotBlank() && !transaction.note.startsWith("From/To ")) {
+            transaction.note
+        } else {
+            transaction.category
+        }
+    } else {
+        if (transaction.note.isNotBlank()) transaction.note else "No details provided."
+    }
 
-    val displayCategory = transaction.category
+    val displayCategory = if (isPersonal) "Account" else transaction.category
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
